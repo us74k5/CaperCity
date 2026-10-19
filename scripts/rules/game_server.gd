@@ -168,7 +168,10 @@ func _begin_turn() -> void:
 		var p := _active()
 		if int(p.jail) > 0:
 			p.jail = int(p.jail) - 1
-			_log("%s sits in jail (%d more month%s)." % [p.name, p.jail, "" if p.jail == 1 else "s"], "info")
+			if int(p.jail) == 0:
+				_log("%s serves the last month in jail." % p.name, "info")
+			else:
+				_log("%s sits in jail (%d more month%s)." % [p.name, p.jail, "" if p.jail == 1 else "s"], "info")
 			_advance_index()
 			continue
 		if int(p.holiday) > 0:
@@ -668,7 +671,7 @@ func _do_crime(p: Dictionary, key: String) -> void:
 			if r.won:
 				_crime_success(p, c, b, "It turned into a shootout. %s " % r.text)
 			else:
-				_result(p, "%s: busted" % c.label, "It turned into a shootout and %s lost. %s" % [p.name, r.text], false)
+				_result(p, "Busted", "It turned into a shootout and %s lost. %s" % [p.name, r.text], false)
 				_arrest(p)
 
 
@@ -803,7 +806,7 @@ func _police_choice(p: Dictionary, choice: String) -> void:
 
 
 func _arrest(p: Dictionary) -> void:
-	var months := 1 + rank_of(p) / 3
+	var months := 1 + rank_of(p) / 4
 	p.jail = months
 	p.heat = int(p.heat) / 2
 	p.steps = 0
@@ -1081,6 +1084,7 @@ func _pending_choose(p: Dictionary, id: String) -> String:
 
 
 func _result(p: Dictionary, title: String, text: String, good: bool) -> void:
+	text = text.strip_edges().replace("  ", " ")
 	_log("%s: %s" % [title, text], "good" if good else "bad")
 	state.pending = {"kind": "result", "player": p.id, "title": title, "text": text, "good": good,
 		"options": [{"id": "ok", "label": "OK", "enabled": true}]}

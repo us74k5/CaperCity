@@ -30,7 +30,7 @@ godot --headless --path . -- --server --port=7777
 The first player to join becomes the room host. The server needs a host that keeps a process running and accepts WebSocket connections on that port.
 
 ## Controls
-- **Move:** arrow keys / WASD, the on-screen arrows, or tap a road square next to you.
+- **Move:** tap anywhere on the map (or a building) to walk there, or use arrow keys / WASD / the on-screen arrows.
 - **Enter a building:** walk into it. Pick actions from the menu on the right.
 - **Mouse wheel:** zoom.
 
@@ -49,9 +49,11 @@ For now those resolve automatically from your crew's stats. Art is placeholder s
 
 ## Tests
 ```
-godot --headless --path . --script res://tests/soak_test.gd
+godot --headless --path . --script res://tests/soak_test.gd       # 40 random 3-player games, checks for broken states
+godot --headless --path . --script res://tests/ui_smoke_test.gd   # drives the real menus/HUD through a game
 ```
-Plays 40 random 3-player games through the rules engine and checks for broken states.
+Network test: start a dedicated server (`-- --server --port=7790`), then run `tests/net_client_test.gd`
+twice (`-- --name=Ana --start` and `-- --name=Bo`). Each client plays its own turns and watches the other's.
 
 ## Layout
 ```

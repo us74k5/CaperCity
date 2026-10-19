@@ -120,12 +120,12 @@ func _draw_road(x: int, y: int, grid: PackedByteArray, w: int, h: int) -> void:
 			if not arm[0]:
 				continue
 			var dvec: Vector2 = arm[1]
-			for i in range(-2, 3):
-				var off := Vector2(cx, cy) + dvec * (CELL * 0.42)
+			for i in range(-2, 2):
+				var off := Vector2(cx, cy) + dvec * (CELL * 0.36)
 				if dvec.x == 0:
-					draw_rect(Rect2(off.x + i * 11 - 3, off.y - 4, 6, 8), C_WHITE)
+					draw_rect(Rect2(off.x + i * 12 + 2, off.y - 7, 7, 14), C_WHITE)
 				else:
-					draw_rect(Rect2(off.x - 4, off.y + i * 11 - 3, 8, 6), C_WHITE)
+					draw_rect(Rect2(off.x - 7, off.y + i * 12 + 2, 14, 7), C_WHITE)
 		return
 	if (e or wv) and not (n or s):
 		draw_line(Vector2(r.position.x, cy - 2), Vector2(r.end.x, cy - 2), C_LINE, 2)

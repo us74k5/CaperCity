@@ -25,6 +25,8 @@ var _dpad: GridContainer
 var _overlay: PanelContainer
 var _overlay_box: VBoxContainer
 var _overlay_kind := ""
+var _path: Array = []        # queued directions from tap-to-walk
+var _path_timer := 0.0
 
 
 func _ready() -> void:
@@ -85,6 +87,8 @@ func _build() -> void:
 	lp.position = Vector2(12, -232)
 	lp.custom_minimum_size = Vector2(520, 160)
 	_log = _rich()
+	_log.fit_content = false
+	_log.scroll_active = true
 	_log.custom_minimum_size = Vector2(500, 150)
 	_log.scroll_following = true
 	lp.add_child(_log)
@@ -117,9 +121,11 @@ func _build() -> void:
 			sp.custom_minimum_size = Vector2(56, 52)
 			_dpad.add_child(sp)
 		else:
-			var arrow: String = {"N": "▲", "S": "▼", "E": "▶", "W": "◀"}[cell]
-			var b2 := UiTheme.button(arrow, false, 52)
+			var b2 := UiTheme.button("", false, 52)
 			b2.custom_minimum_size.x = 56
+			b2.icon = _arrow_icon(cell)
+			b2.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			b2.tooltip_text = {"N": "Up", "S": "Down", "E": "Right", "W": "Left"}[cell]
 			var d: String = cell
 			b2.pressed.connect(func(): _move(d))
 			_dpad.add_child(b2)
@@ -164,6 +170,14 @@ func _layout() -> void:
 		c.position = (vs - c.size) / 2.0
 	var lp: Control = _log.get_parent()
 	lp.position = Vector2(12, vs.y - lp.size.y - 12)
+
+
+func _arrow_icon(dir: String) -> Texture2D:
+	var rot: int = {"N": 0, "E": 90, "S": 180, "W": 270}[dir]
+	var svg := '<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 26 26"><g transform="rotate(%d 13 13)"><path d="M13 4 L23 18 L3 18 Z" fill="#F2EEE6"/></g></svg>' % rot
+	var img := Image.new()
+	img.load_svg_from_string(svg)
+	return ImageTexture.create_from_image(img)
 
 
 func _rich() -> RichTextLabel:
@@ -225,14 +239,15 @@ func refresh() -> void:
 			tag = " [color=#7FE6D6]holiday[/color]"
 		if not p.connected:
 			tag += " [color=#8E939D](offline)[/color]"
-		var arrow := "▶ " if not active.is_empty() and int(active.id) == int(p.id) else "   "
-		lines.append("%s[color=%s]●[/color] %s  [b]%d[/b]  [color=#F2C230]$%s[/color]%s" % [arrow, p.color, p.name, p.points, _money(int(p.cash)), tag])
+		var arrow := "» " if not active.is_empty() and int(active.id) == int(p.id) else "   "
+		lines.append("%s[color=%s]•[/color] %s  [b]%d[/b]  [color=#F2C230]$%s[/color]%s" % [arrow, p.color, p.name, p.points, _money(int(p.cash)), tag])
 	_standings.text = "\n".join(lines)
 
 	# log
 	var log_lines: Array = []
 	var colors := {"good": "#7FE6D6", "bad": "#FF9C90", "big": "#F2C230", "turn": "#FF5D4F", "crime": "#F2C230"}
-	for e in s.log.slice(maxi(0, s.log.size() - 14)):
+	var shown: Array = s.log.filter(func(e): return e.kind != "move")
+	for e in shown.slice(maxi(0, shown.size() - 12)):
 		var c: String = colors.get(e.kind, "#D9D5CC")
 		log_lines.append("[color=%s]%s[/color]" % [c, e.text])
 	_log.text = "\n".join(log_lines)
@@ -395,11 +410,63 @@ func _move(dir: String) -> void:
 	Net.send_intent({"t": "move", "dir": dir})
 
 
+func _process(delta: float) -> void:
+	if _path.is_empty():
+		return
+	_path_timer -= delta
+	if _path_timer > 0.0:
+		return
+	var a := Net.active_player()
+	if not Net.is_my_turn() or not Net.state.pending.is_empty() or a.is_empty() or int(a.inside) >= 0 or int(a.steps) <= 0:
+		_path.clear()
+		return
+	_move(_path.pop_front())
+	_path_timer = 0.16
+
+
+## Shortest road route to `goal` (a road cell, or a building cell to walk into).
+func _find_path(start: Vector2i, goal: Vector2i) -> Array:
+	var city: Dictionary = Net.state.city
+	var w: int = city.w
+	var h: int = city.h
+	var grid: PackedByteArray = city.grid
+	if goal.x < 0 or goal.y < 0 or goal.x >= w or goal.y >= h:
+		return []
+	var goal_cell: int = grid[goal.y * w + goal.x]
+	if goal_cell != CityGen.ROAD and goal_cell != CityGen.BUILDING:
+		return []
+	var dirs := {"N": Vector2i(0, -1), "S": Vector2i(0, 1), "E": Vector2i(1, 0), "W": Vector2i(-1, 0)}
+	var came := {start: ""}
+	var queue: Array = [start]
+	while queue.size() > 0:
+		var cur: Vector2i = queue.pop_front()
+		if cur == goal:
+			break
+		for dname in dirs:
+			var nxt: Vector2i = cur + dirs[dname]
+			if came.has(nxt) or nxt.x < 0 or nxt.y < 0 or nxt.x >= w or nxt.y >= h:
+				continue
+			var cell: int = grid[nxt.y * w + nxt.x]
+			if cell == CityGen.ROAD or nxt == goal:
+				came[nxt] = dname
+				queue.append(nxt)
+	if not came.has(goal):
+		return []
+	var out: Array = []
+	var c: Vector2i = goal
+	while c != start:
+		var dn: String = came[c]
+		out.push_front(dn)
+		c -= dirs[dn]
+	return out
+
+
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event.pressed:
 		return
 	var map := {KEY_UP: "N", KEY_DOWN: "S", KEY_LEFT: "W", KEY_RIGHT: "E", KEY_W: "N", KEY_S: "S", KEY_A: "W", KEY_D: "E"}
 	if event is InputEventKey and map.has(event.keycode) and Net.is_my_turn() and Net.state.pending.is_empty():
+		_path.clear()
 		_move(map[event.keycode])
 		get_viewport().set_input_as_handled()
 	elif event is InputEventKey and event.keycode in [KEY_ENTER, KEY_SPACE] and not Net.state.pending.is_empty():
@@ -414,7 +481,12 @@ func _on_cell_tapped(cell: Vector2i) -> void:
 	var a := Net.active_player()
 	if int(a.inside) >= 0:
 		return
-	var d := cell - Vector2i(int(a.pos[0]), int(a.pos[1]))
-	var dirs := {Vector2i(0, -1): "N", Vector2i(0, 1): "S", Vector2i(1, 0): "E", Vector2i(-1, 0): "W"}
-	if dirs.has(d):
-		_move(dirs[d])
+	var start := Vector2i(int(a.pos[0]), int(a.pos[1]))
+	var route := _find_path(start, cell)
+	if route.is_empty():
+		return
+	if route.size() > int(a.steps):
+		Net.error_message.emit("That's %d steps away. You have %d left." % [route.size(), a.steps])
+		return
+	_path = route
+	_path_timer = 0.0

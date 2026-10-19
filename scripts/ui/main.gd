@@ -110,10 +110,11 @@ func show_menu() -> void:
 	center.add_child(v)
 
 	v.add_child(UiTheme.label("RIVAL CREWS · ONE TOWN · LIVE", 15, UiTheme.TEAL))
-	v.add_child(UiTheme.label("CAPER", 72, UiTheme.CORAL))
-	var city_l := UiTheme.label("CITY", 72, UiTheme.TEXT)
-	city_l.add_theme_constant_override("line_spacing", -20)
-	v.add_child(city_l)
+	var logo := VBoxContainer.new()
+	logo.add_theme_constant_override("separation", -34)
+	logo.add_child(UiTheme.label("CAPER", 76, UiTheme.CORAL))
+	logo.add_child(UiTheme.label("CITY", 76, UiTheme.TEXT))
+	v.add_child(logo)
 	v.add_child(UiTheme.label("Pull the job. Dodge the cops. Run the town.", 18, UiTheme.MUTED))
 
 	var st := _load_settings()
@@ -247,7 +248,7 @@ func _refresh_lobby() -> void:
 		c.queue_free()
 	for pid in Net.state.players:
 		var p: Dictionary = Net.state.players[pid]
-		var l := UiTheme.label("●  %s  —  %s%s" % [p.name, p.crew_name, "  (this device)" if int(p.owner) == Net.my_peer else ""], 18, Color(p.color))
+		var l := UiTheme.label("•  %s  —  %s%s" % [p.name, p.crew_name, "  (this device)" if int(p.owner) == Net.my_peer else ""], 18, Color(p.color))
 		_lobby_list.add_child(l)
 	var host := Net.am_room_host()
 	_lobby_start.visible = host

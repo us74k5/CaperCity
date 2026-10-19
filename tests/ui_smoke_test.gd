@@ -7,6 +7,8 @@ var frame := 0
 var net: Node
 var shots_dir := ""
 var shot_n := 0
+var tap_target := -1
+var tap_frame := 0
 
 
 func _init() -> void:
@@ -31,7 +33,17 @@ func _process(_d: float) -> bool:
 		net.send_intent({"t": "start", "target": 20})
 	elif frame == 30:
 		_shot("town")
-	elif frame > 30 and frame < 600:
+		_tap_nearest_building()
+	elif tap_target >= 0:
+		var a0: Dictionary = net.active_player()
+		if int(a0.inside) == tap_target:
+			print("tap-to-walk: entered building %d after %d frames" % [tap_target, frame - tap_frame])
+			_shot("tap_walk")
+			tap_target = -1
+		elif frame - tap_frame > 3000 or not net.state.pending.is_empty():
+			print("tap-to-walk: did not arrive (inside=%s pending=%s)" % [a0.inside, not net.state.pending.is_empty()])
+			tap_target = -1
+	elif frame > 30 and frame < 900:
 		var s: Dictionary = net.state
 		if s.phase != "playing":
 			return _finish()
@@ -48,9 +60,30 @@ func _process(_d: float) -> bool:
 				net.send_intent({"t": "menu", "id": en[randi() % en.size()].id})
 			else:
 				_go_toward_building(a, s)
-	elif frame == 600:
+	elif frame >= 900:
 		return _finish()
 	return false
+
+
+func _tap_nearest_building() -> void:
+	var hud: Node = main.get("_hud")
+	var a: Dictionary = net.active_player()
+	var start := Vector2i(int(a.pos[0]), int(a.pos[1]))
+	var best := -1
+	var best_len := 999
+	for b in net.state.city.buildings:
+		var route: Array = hud._find_path(start, Vector2i(int(b.x), int(b.y)))
+		if route.size() > 0 and route.size() < best_len and route.size() <= int(a.steps):
+			best = int(b.id)
+			best_len = route.size()
+	if best < 0:
+		print("tap-to-walk: no reachable building")
+		return
+	var tb: Dictionary = net.state.city.buildings[best]
+	print("tap-to-walk: tapping %s, %d steps away" % [tb.name, best_len])
+	tap_target = best
+	tap_frame = frame
+	hud._on_cell_tapped(Vector2i(int(tb.x), int(tb.y)))
 
 
 func _go_toward_building(a: Dictionary, s: Dictionary) -> void:
