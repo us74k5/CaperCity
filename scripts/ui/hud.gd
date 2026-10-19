@@ -4,7 +4,7 @@ extends Control
 
 signal back_to_menu
 
-var city_view: Node2D
+var city_view: Node
 
 var _me_label: RichTextLabel
 var _banner: PanelContainer

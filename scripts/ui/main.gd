@@ -5,7 +5,7 @@ const SETTINGS_PATH := "user://settings.cfg"
 
 var _layer: CanvasLayer
 var _screen: Control
-var _city_view: Node2D
+var _city_view: Node3D
 var _hud: Control
 var _toast: Label
 var _toast_timer := 0.0
@@ -262,7 +262,7 @@ func _refresh_lobby() -> void:
 
 func show_game() -> void:
 	if _city_view == null:
-		_city_view = preload("res://scripts/ui/city_view.gd").new()
+		_city_view = preload("res://scripts/ui/city_view_3d.gd").new()
 		add_child(_city_view)
 	_city_view.set_city(Net.state.city)
 	var hud: Control = preload("res://scripts/ui/hud.gd").new()
