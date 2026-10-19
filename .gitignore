@@ -1,0 +1,20 @@
+# Godot
+.godot/
+export/
+export_presets.cfg
+*.translation
+
+# Original DOS game files and anything extracted from them stay out of the repo
+original/
+extraction_output/
+*.ZIP
+*.EXE
+*.OVR
+*.SPF
+*.CUT
+*.LEV
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.tmp
