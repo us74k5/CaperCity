@@ -128,7 +128,11 @@ func _process(_d: float) -> bool:
 					net.send_intent({"t": "menu", "id": e.id})
 					break
 		370:
-			print("training: ", net.state.pending.get("text", "?"))
+			if net.state.pending.get("kind", "") != "result" and spin_wait < 4000:
+				spin_wait += 1
+				frame -= 1   # wait for the training result however slowly frames come
+				return false
+			print("training: ", net.state.pending.get("kind", "-"), " ", net.state.pending.get("title", "-"), " ", net.state.pending.get("text", "?"), " inside=", net.active_player().inside, " path=", net.active_player().menu_path)
 			_check("→" in str(net.state.pending.get("text", "")), "training shows before and after")
 			_shot("trained")
 			net.send_intent({"t": "pending", "id": "ok"})

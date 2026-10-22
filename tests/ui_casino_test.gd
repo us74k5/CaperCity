@@ -81,6 +81,12 @@ func _tick() -> bool:
 			if frame - at == 2 and hud._modal.visible:
 				print("FAIL: result card showed before the %s hand was played" % table)
 				return _finish(1)
+			if frame - at == 3:
+				# The payout is in the balance at once, while the hand is still being played out.
+				var cash: String = hud._money(int(net.my_player().cash))
+				if hud._modal.visible or not (cash in hud._me_label.text) or not ("Cash $" + cash in _texts(hud._casino_box)):
+					print("FAIL: the %s balance didn't update before the animation finished ($%s)" % [table, cash])
+					return _finish(1)
 			var music: Node = root.get_node("Music")
 			if frame - at == 2 and not music._silent and music._held.is_empty():
 				print("FAIL: the %s win/lose sound didn't wait for the hand to play out" % table)
@@ -106,6 +112,15 @@ func _tick() -> bool:
 			print("casino: all tables played")
 			return _finish(0)
 	return false
+
+
+func _texts(n: Node) -> String:
+	var out := ""
+	for c in n.get_children():
+		if c is Label:
+			out += c.text + "\n"
+		out += _texts(c)
+	return out
 
 
 func _shot(tag: String) -> void:

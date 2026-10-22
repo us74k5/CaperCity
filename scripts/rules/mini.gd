@@ -7,6 +7,7 @@ extends RefCounted
 ##   sneak                  -> Sneak  (reach the door without a guard seeing you)
 ##   loot, containers, train -> Push  (push goods onto the marked squares; stop the mail train)
 ##   safe                   -> Safe   (three dials; listen for the odd tone)
+##   jailbreak              -> Jailbreak (a month in jail: the bathroom vent, never quite)
 ## Grid games share a W x H grid of rows ('#' wall, '.' floor, plus per-game marks) and these helpers.
 ## Levels are made by our own generators, never the original's.
 
@@ -16,7 +17,7 @@ const TICK := 0.05
 const READY_TICKS := 40          # 2 s of "get ready" before anything moves
 const DIRS := {"N": Vector2i(0, -1), "S": Vector2i(0, 1), "E": Vector2i(1, 0), "W": Vector2i(-1, 0)}
 const BACK := {"N": "S", "S": "N", "E": "W", "W": "E", "": ""}
-const GRID_GAMES := ["escape", "catch", "sneak", "loot", "containers", "train"]
+const GRID_GAMES := ["escape", "catch", "sneak", "loot", "containers", "train", "jailbreak"]
 
 
 ## A new game. `level` 0..8 sets the difficulty; `then` says what happens after (the server's business).
@@ -31,6 +32,8 @@ static func create(game: String, title: String, level: int, rng: RandomNumberGen
 			m = Push.create(game, level, rng)
 		"safe":
 			m = Safe.create(level)
+		"jailbreak":
+			m = Jailbreak.create(level, rng)
 	m.game = game
 	m.title = title
 	m.then = then
@@ -58,6 +61,8 @@ static func input(m: Dictionary, intent: Dictionary) -> String:
 			return Chase.steer(m, str(intent.get("dir", "")))
 		"sneak", "loot", "containers", "train":
 			return queue_step(m, str(intent.get("dir", "")))
+		"jailbreak":
+			return Jailbreak.input(m, str(intent.get("dir", "")))
 	return "Not for this game."
 
 
@@ -78,6 +83,8 @@ static func step(m: Dictionary, rng: RandomNumberGenerator) -> void:
 			Push.step(m)
 		"safe":
 			Safe.step(m)
+		"jailbreak":
+			Jailbreak.step(m)
 
 
 ## Give up / bail out. Most games count it as a loss; for the train it calls the train in early.

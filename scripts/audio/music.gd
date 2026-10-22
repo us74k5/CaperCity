@@ -34,6 +34,8 @@ var _tween: Tween
 ## its sting waits for the reveal instead of giving the result away.
 var hold_while: Callable
 var _held: Array = []
+var _turn := ""                 # whose turn it is ("month:player"): stings don't outlive the turn
+var _sting_name := ""
 
 
 func _ready() -> void:
@@ -156,6 +158,15 @@ func _on_state() -> void:
 	if _last_cue < 0:
 		_last_cue = n          # joining mid-game: don't replay old stings
 		return
+	var turn := "%s:%s" % [s.get("month", 0), s.get("active", 0)]
+	if turn != _turn:
+		# A new turn: whatever the last player's actions queued up stops here.
+		_turn = turn
+		_queue.clear()
+		_held.clear()
+		if _sting.playing:
+			_sting.stop()
+			_duck(false)
 	if n != _last_cue:
 		_last_cue = n
 		if hold_while.is_valid() and hold_while.call():
@@ -171,12 +182,19 @@ func _process(_delta: float) -> void:
 		_play_cues(names)
 
 
+## Queues stings, without piling them up: the same sting twice in a row (e.g. buying counterfeit
+## cash again and again) plays once, and at most two wait behind the one playing.
 func _play_cues(names: Array) -> void:
 	for c in names:
 		if SFX_CUES.has(c):
 			Sfx.play(SFX_CUES[c])
 		elif STING_FILES.has(c):
-			_queue.append(STING_FILES[c])
+			var file: String = STING_FILES[c]
+			if (_sting.playing and file == _sting_name) or _queue.has(file):
+				continue
+			if _queue.size() >= 2:
+				_queue.pop_front()
+			_queue.append(file)
 	if not _sting.playing:
 		_next_sting()
 
@@ -186,6 +204,7 @@ func _next_sting() -> void:
 		_duck(false)
 		return
 	var sting_name: String = _queue.pop_front()
+	_sting_name = sting_name
 	_debug("sting  -> " + sting_name)
 	var stream := _load("res://audio/sfx/%s.ogg" % sting_name, false)
 	if stream == null:

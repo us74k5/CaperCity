@@ -50,7 +50,7 @@ Force a layout with `?mobile=1` or `?desktop=1` in the URL (or `-- --mobile` whe
 - **Music:** the title screen's Music button, or **M** in game, turns the background music on or off (remembered).
 - **Look around:** drag the map with the left or right mouse button (or a finger). Dragging never moves your crew;
   **Centre** (or Space) goes back to whoever's turn it is.
-- **Move:** tap anywhere on the map (or a building) to walk there, or use arrow keys / WASD / the on-screen arrows.
+- **Move:** arrow keys / WASD / the on-screen arrows. Clicking or tapping the map doesn't move anyone (drag it to look around).
 - **Enter a building:** walk into it. The view switches to a street-level scene of that place, like the original; pick actions from the menu on the right.
 - **The arms dealer:** a gun store you walk into. "Train your crew" takes you to the gym out back; your crew's stats
   show beside the menu there and when you pick who gets a weapon (with what each of them still needs).
@@ -80,9 +80,17 @@ Force a layout with `?mobile=1` or `?desktop=1` in the URL (or `-- --mobile` whe
   pickpocket or up to 5 stolen devices, four or five for a robbery, a stolen car or 6-10 devices, and the full squad
   (eight officers, nearly as fast as you) for a kidnapping or more than 10 devices. Bribes cost more and work less often
   for big crimes. Getting caught, a double-crossing cop or a shootout leads to a fight; losing means court and jail.
-  Jail impounds your car, takes your crew's weapons and stolen goods and costs a $500 fine. Fresh out of jail with
+  Jail takes your car (see below), your crew's weapons and stolen goods and costs a $500 fine. Fresh out of jail with
   nothing on you, a checkpoint lets you go. The cops watch every building you've hit: walk back into one and you're
-  arrested on the spot (a paid-off police chief still covers you).
+  arrested on the spot, or with a crew behind you, a fight with the stakeout first (a paid-off police chief still covers
+  you). The police start every turn fresh: last turn's crime scenes are open again.
+  Jail impounds a car you bought (pay the fee at police HQ to get it back); a stolen one goes back to its owner for good.
+- **Jail:** each month inside is played: the prison bathroom jailbreak. Pry the vent off the far wall; you'll get it
+  almost open, but the guards' round always comes first (and Big Lou finds it hilarious). Out of jail you're down
+  10 energy and in a wheelchair for as many turns as you served: fewer steps, no motorway, and no driving unless a
+  crew member drives.
+- **Easy Eddie:** an unpaid loan brings Eddie and his whole gang (rifles and machine guns) at your next turn. Beat them
+  and the debt is gone; lose and they break your legs: a wheelchair and 25 less energy for the rest of the game.
 - The ransom chase: when the parents cheat, catch the runaway with the money case in 15 seconds.
 - The original's other real-time minigames, each with fresh levels every time:
   sneaking past guards (armored truck, the dignitary, villa break-ins, smuggling a suitcase through airport customs),
@@ -110,6 +118,8 @@ godot --headless --path . --script res://tests/city_map_test.gd   # the original
 godot --headless --path . --script res://tests/creation_test.gd   # making your boss, and how often police stop you
 godot --headless --path . --script res://tests/jail_test.gd       # jail, crime scenes, loan collectors, police response by crime, chase steps
 godot --headless --path . --script res://tests/ui_lot_test.gd     # the car lot, and the camera in among the cars when stealing one
+godot --headless --path . --script res://tests/turn_rules_test.gd # police reset, impound, stakeouts, jail turns, wheelchair, Eddie, casino payouts
+godot --headless --path . --script res://tests/ui_jail_test.gd    # the jailbreak on screen, the wheelchair, Eddie's gang on the fight screen
 godot --headless --path . --script res://tests/ui_creator_test.gd   # the creator, dragging the map, the gun store and gym
 godot --headless --path . --script res://tests/ui_smoke_test.gd   # drives the real menus/HUD through a game
 godot --headless --path . --script res://tests/ui_fight_test.gd   # police stop -> shoot it out -> fight played by tapping

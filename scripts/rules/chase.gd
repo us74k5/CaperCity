@@ -33,7 +33,7 @@ static func create(kind: String, level: int, rng: RandomNumberGenerator) -> Dict
 			if int(dist[k]) >= 9 and int(dist[k]) <= 13:
 				picks.append(k)
 		var start: Vector2i = picks[rng.randi() % picks.size()] if picks.size() > 0 else Vector2i(1, 1)
-		c.foes.append(Mini.actor(start, clampf(0.225 + 0.003 * level, 0.225, 0.25)))
+		c.foes.append(Mini.actor(start, clampf(0.21 + 0.003 * level, 0.21, 0.235)))   # a touch slower than you, still
 	return c
 
 

@@ -184,6 +184,8 @@ func _join(peer: int, pname: String, crew: String, local: bool, token: String = 
 		"inside": -1, "menu_path": [], "menu": [], "half_step": false, "stopped": false,
 		"jail": 0, "holiday": 0, "room": false, "rent_paid": 0,
 		"loan": 0, "loan_months": 0, "passport": false, "immunity": 0, "heat": 0, "scenes": [], "new_scene": "", "news": "", "clean": false, "car_stolen": false, "walk_out": false,
+		"impound": 0, "jail_served": 0, "in_cell": false, "wheelchair": 0, "chair": false, "legs_broken": false,
+		"stamina_penalty": 0, "eddie_due": false,
 		"radios": 0, "electronics": 0, "dirt": "", "hostage": {}, "ransom": {}, "suitcase": {},
 		"gang_war_used": false, "connected": true,
 		# Character creation (see _create_step): local seats skip it.
@@ -333,32 +335,40 @@ func _begin_turn() -> void:
 			continue
 		if int(p.jail) > 0:
 			p.jail = int(p.jail) - 1
-			if int(p.jail) == 0:
-				_log("%s serves the last month in jail." % p.name, "info")
-			else:
-				_log("%s sits in jail (%d more month%s)." % [p.name, p.jail, "" if p.jail == 1 else "s"], "info")
-			_advance_index()
-			continue
+			p.jail_served = int(p.get("jail_served", 0)) + 1
+			_jail_turn(p)
+			return
 		if int(p.holiday) > 0:
 			p.holiday = int(p.holiday) - 1
 			for m in p.crew:
-				m.stamina = mini(int(m.stamina) + 8, Balance.STAMINA_CAP_HOLIDAY)
+				m.stamina = mini(int(m.stamina) + 8, Balance.STAMINA_CAP_HOLIDAY - (int(p.get("stamina_penalty", 0)) if m == p.crew[0] else 0))
 				for s in ["muscle", "smarts", "nerve"]:
 					m[s] = mini(int(m[s]) + int(p.get("holiday_boost", 2)), 99)
 			_log("%s is on holiday%s." % [p.name, "" if p.holiday == 0 else " (%d more)" % p.holiday], "info")
 			_advance_index()
 			continue
-		p.steps_max = Balance.CARS[int(p.car)].steps
+		_release(p)
+		# The wheelchair: from jail (for as many turns as the sentence) or for good (Eddie).
+		p.chair = int(p.get("wheelchair", 0)) > 0 or p.get("legs_broken", false)
+		if int(p.get("wheelchair", 0)) > 0:
+			p.wheelchair = int(p.wheelchair) - 1
+		p.steps_max = Balance.CARS[int(p.car)].steps if _driving(p) else (Balance.WHEELCHAIR_STEPS if p.chair else Balance.CARS[0].steps)
 		p.steps = p.steps_max
 		p.half_step = false
 		p.stopped = false
 		p.gang_war_used = false
 		p.inside = -1
 		p.menu_path = []
+		# A new turn, a clean slate with the police: last turn's stakeouts are over.
+		p.scenes = []
+		p.walk_out = false
 		_log("Month %d: %s's turn." % [state.month, p.name], "turn")
 		_refresh_menu(p)
+		if p.get("eddie_due", false):
+			_eddie_comes(p)
+			return
 		if int(p.loan) > 0 and int(p.loan_months) == 1 and str(p.get("news", "")) == "":
-			p.news = "Easy Eddie's loan is due at the end of this month: $%d. Pay it at a loan shark, or the collectors take your cash, your car and then you." % p.loan
+			p.news = "Easy Eddie's loan is due at the end of this month: $%d. Pay it at a loan shark, or Eddie and his whole crew come to collect." % p.loan
 		if str(p.get("news", "")) != "":
 			_result(p, "Easy Eddie" if p.news.begins_with("Easy Eddie's loan") else "While you were away", p.news, false)
 			p.news = ""
@@ -377,6 +387,10 @@ func _end_turn() -> void:
 	p.inside = -1
 	p.menu_path = []
 	p.menu = []
+	p.in_cell = false
+	# Nothing police-related carries over into the next player's turn.
+	if str(state.pending.get("kind", "")) == "police":
+		state.pending = {}
 	if state.phase != "playing":
 		return
 	_advance_index()
@@ -390,9 +404,13 @@ func _end_month() -> void:
 	_log("— Month %d begins —" % state.month, "big")
 	for pid in state.order:
 		var p: Dictionary = state.players[pid]
-		for m in p.crew:
+		for ci in p.crew.size():
+			var m: Dictionary = p.crew[ci]
 			var cap: int = Balance.STAMINA_CAP_HOLIDAY if int(p.holiday) > 0 else Balance.STAMINA_CAP
-			m.stamina = mini(int(m.stamina) + 4 + int(m.muscle) / 12, maxi(cap, int(m.stamina)))
+			if ci == 0:
+				cap -= int(p.get("stamina_penalty", 0))   # Eddie's boys: for good
+			var hurt: bool = ci == 0 and int(p.get("stamina_penalty", 0)) > 0
+			m.stamina = mini(int(m.stamina) + 4 + int(m.muscle) / 12, cap if hurt else maxi(cap, int(m.stamina)))
 		p.heat = maxi(0, int(p.heat) - 2)
 		if int(p.immunity) > 0:
 			p.immunity = int(p.immunity) - 1
@@ -405,7 +423,7 @@ func _end_month() -> void:
 		if int(p.loan) > 0:
 			p.loan = int(ceil(float(p.loan) * (1.0 + Balance.LOAN_RATE)))
 			p.loan_months = int(p.loan_months) - 1
-			if int(p.loan_months) <= 0:
+			if int(p.loan_months) <= 0 and not p.get("eddie_due", false):
 				_collect_loan(p)
 		if not p.ransom.is_empty():
 			p.ransom.months = int(p.ransom.months) - 1
@@ -422,26 +440,32 @@ func _end_month() -> void:
 
 
 func _collect_loan(p: Dictionary) -> void:
-	var debt: int = p.loan
-	var take := mini(debt, int(p.cash))
-	p.cash = int(p.cash) - take
-	debt -= take
-	var msg := "Easy Eddie's collectors came for %s and took $%d" % [p.name, take]
-	if debt > 0 and int(p.car) > 0:
-		var car_value: int = Balance.CARS[int(p.car)].price / 2
-		msg += ", plus the %s" % Balance.CARS[int(p.car)].name
-		debt = maxi(0, debt - car_value)
-		p.car = 0
-	if debt > 0:
-		var months := mini(1 + debt / 10000, 2)
-		msg += ". Still short, so they handed %s to the cops for %d month%s. %s" % [p.name, months, "" if months == 1 else "s", _jail(p, months)]
-	p.loan = 0
-	p.loan_months = 0
-	msg = msg.strip_edges()
-	if not msg.ends_with("."):
-		msg += "."
-	_log(msg, "bad")
-	p.news = msg
+	p.eddie_due = true   # once per debt: settled by the fight, win or lose
+	_log("%s's loan from Easy Eddie is overdue: $%d. Eddie is coming to collect." % [p.name, p.loan], "bad")
+
+
+## Easy Eddie and his whole crew, rifles and machine guns, come for an overdue loan.
+func _eddie_comes(p: Dictionary) -> void:
+	p.eddie_due = false
+	var before := str(p.get("news", "")).strip_edges()
+	p.news = ""
+	_start_fight(p, "Easy Eddie", "%s%s didn't pay. Easy Eddie and his whole crew are here to collect $%d, one way or another. Win and the debt is gone." % [
+		before + " " if before != "" else "", p.name, p.loan], _eddie_gang(), {"k": "eddie"})
+
+
+## Eddie plus his gang: everyone on plain, unimproved stats (fresh rolls, no training), each with a
+## rifle or a machine gun.
+func _eddie_gang() -> Array:
+	var out: Array = []
+	var n := 5 + mini(rank_of(_active()), 4) / 2
+	for i in n:
+		var stamina := rng.randi_range(int(Balance.ROLL_STATS.stamina.range[0]), int(Balance.ROLL_STATS.stamina.range[1]))
+		var gear: int = [Balance.RIFLE, Balance.MACHINE_GUN][rng.randi() % 2]
+		out.append(Fight.unit("Easy Eddie" if i == 0 else "Eddie's man %d" % i, 1, gear, stamina, stamina,
+			rng.randi_range(int(Balance.ROLL_STATS.muscle.range[0]), int(Balance.ROLL_STATS.muscle.range[1])),
+			rng.randi_range(int(Balance.ROLL_STATS.smarts.range[0]), int(Balance.ROLL_STATS.smarts.range[1])),
+			"eddie" if i == 0 else "thug"))
+	return out
 
 
 # --------------------------------------------------------------------------- movement
@@ -459,7 +483,7 @@ func _move(p: Dictionary, dir: String) -> String:
 	var city: Dictionary = state.city
 	if nx < 0 or ny < 0 or nx >= city.w or ny >= city.h:
 		return "Edge of town."
-	var cost := CityGen.step_cost(city, Vector2i(int(p.pos[0]), int(p.pos[1])), dir, int(p.car) > 0)
+	var cost := CityGen.step_cost(city, Vector2i(int(p.pos[0]), int(p.pos[1])), dir, _driving(p))
 	match cost:
 		CityGen.NEEDS_CAR:
 			return "The motorway is for cars only."
@@ -522,8 +546,8 @@ func _after_action(p: Dictionary) -> void:
 	_check_win(p)
 	if state.phase != "playing":
 		return
-	if state.pending.is_empty() and (int(p.steps) <= 0 or int(p.jail) > 0):
-		if int(p.jail) == 0:
+	if state.pending.is_empty() and (int(p.steps) <= 0 or int(p.jail) > 0 or p.get("in_cell", false)):
+		if int(p.jail) == 0 and not p.get("in_cell", false):
 			_log("%s is out of steps." % p.name, "info")
 		_end_turn()
 		return
@@ -769,6 +793,10 @@ func _build_menu(p: Dictionary) -> Array:
 				if m.is_empty():
 					m.append(_e("noop", "Nobody's in jail right now.", "", false, "Nobody to free."))
 			else:
+				if int(p.get("impound", 0)) > 0:
+					var fee := impound_fee(int(p.impound))
+					m.append(_e("act:impound", "Get the %s back from the impound lot" % Balance.CARS[int(p.impound)].name, "$%d fee" % fee,
+						int(p.cash) >= fee and int(p.car) == 0, "You already have a car." if int(p.car) > 0 else "Not enough cash.", 1))
 				m.append(_e("sub:bribe", "Bribe the chief", "No arrests while it lasts"))
 				m.append(_e("sub:free", "Free a jailed rival", "They'll owe you"))
 				m.append(_blackmail_entry(p, b))
@@ -1109,6 +1137,26 @@ func _police_choice(p: Dictionary, choice: String) -> void:
 			_start_fight(p, "Shootout", "%s goes for the gun. The officers take cover." % p.name, cops, {"k": "police", "how": "shootout", "sev": sev})
 
 
+## Eddie's price for an unpaid loan: a permanent wheelchair and less energy for the rest of the game.
+## The fight screen plays it out (the "legs" event) before the result card.
+func _break_legs(p: Dictionary) -> void:
+	if not p.get("legs_broken", false):
+		p.legs_broken = true
+		p.stamina_penalty = int(p.get("stamina_penalty", 0)) + Balance.LEGS_STAMINA
+		var boss: Dictionary = p.crew[0]
+		boss.stamina = maxi(1, int(boss.stamina) - Balance.LEGS_STAMINA)
+	p.chair = true
+	if not _driving(p):
+		p.steps = mini(int(p.steps), Balance.WHEELCHAIR_STEPS)
+	var f: Dictionary = state.fight
+	if not f.is_empty():
+		var victim := -1
+		for u in f.units:
+			if int(u.owner) == int(p.id) and int(u.ci) == 0:
+				victim = int(u.id)
+		Fight._event(f, {"k": "legs", "victim": victim})
+
+
 ## Court and prison. Returns the sentence in months.
 func _arrest(p: Dictionary, sev: int = 0) -> String:
 	var months := 1 + rank_of(p) / 4 + (1 if sev >= 8 else 0)
@@ -1128,11 +1176,16 @@ func _jail(p: Dictionary, months: int) -> String:
 	p.scenes = []   # time served
 	p.new_scene = ""
 	p.clean = true   # until the next crime, a stop with nothing on you ends with a wave
-	p.car_stolen = false
 	var lost: Array = []
 	if int(p.car) > 0:
-		lost.append("The %s was impounded." % Balance.CARS[int(p.car)].name)
+		var car: Dictionary = Balance.CARS[int(p.car)]
+		if p.car_stolen:
+			lost.append("The stolen %s went back to its owner: gone for good." % car.name)
+		else:
+			p.impound = int(p.car)
+			lost.append("The %s was towed to the impound lot: $%d at police HQ gets it back." % [car.name, impound_fee(int(p.car))])
 		p.car = 0
+	p.car_stolen = false
 	var guns: Array = []
 	for m in p.crew:
 		if int(m.gear) > 0:
@@ -1168,9 +1221,55 @@ func _back_at_scene(p: Dictionary, b: Dictionary) -> bool:
 	if not p.get("scenes", []).has(int(b.id)) or int(p.immunity) > 0:
 		return false
 	_log("%s went back to %s. The cops were waiting." % [p.name, b.name], "bad")
+	if _has_gang(p):
+		_start_fight(p, "Stakeout", "The police were staking out %s, and %s walked right back in. The crew won't go quietly." % [b.name, p.name],
+			_cops(p, 5), {"k": "police", "how": "stakeout", "sev": 5})
+		return true
 	var text := "The police were staking out %s, and %s walked right back in. %s" % [b.name, p.name, _arrest(p)]
 	_result(p, "Back at the scene", text, false)
 	return true
+
+
+## A boss with at least one crew member: enough to fight back, and someone to drive.
+func _has_gang(p: Dictionary) -> bool:
+	return p.crew.size() >= 2
+
+
+## Whether `p` gets about by car this turn: a wheelchair needs someone else at the wheel.
+func _driving(p: Dictionary) -> bool:
+	return int(p.car) > 0 and (not p.get("chair", false) or _has_gang(p))
+
+
+static func impound_fee(ci: int) -> int:
+	return 300 + int(Balance.CARS[ci].price) / 4
+
+
+## A month in jail: the bathroom escape (see Jailbreak), which never quite works.
+func _jail_turn(p: Dictionary) -> void:
+	p.in_cell = true
+	p.steps = 0
+	p.steps_max = 0
+	p.inside = -1
+	p.menu_path = []
+	p.menu = []
+	_log("Month %d: %s's turn, in jail (%s)." % [state.month, p.name, "last month" if int(p.jail) == 0 else "%d more" % p.jail], "turn")
+	_start_mini(p, "jailbreak", "Jailbreak", "Lights out in the prison bathroom. The vent on the far wall is loose... Get to it and pry it open before the guards come round.",
+		0, {"k": "jailbreak"})
+
+
+## First turn out of jail: weak from the cell, and in a wheelchair for as many turns as the sentence.
+func _release(p: Dictionary) -> void:
+	var served := int(p.get("jail_served", 0))
+	if served <= 0:
+		return
+	p.jail_served = 0
+	var boss: Dictionary = p.crew[0]
+	boss.stamina = maxi(1, int(boss.stamina) - Balance.RELEASE_STAMINA)
+	p.wheelchair = maxi(int(p.get("wheelchair", 0)), served)
+	var line := "%s is out after %d month%s inside: %d less energy, and in a wheelchair for %d turn%s." % [
+		p.name, served, "" if served == 1 else "s", Balance.RELEASE_STAMINA, served, "" if served == 1 else "s"]
+	_log(line, "info")
+	p.news = (str(p.news) + " " + line).strip_edges()
 
 
 ## Opens a minigame (see Mini). `then` says what happens after.
@@ -1182,7 +1281,7 @@ func _start_mini(p: Dictionary, game: String, title: String, text: String, level
 		_safe_secret = Safe.code(rng)
 	_mini_clock = 0.0
 	_log("%s: %s" % [title, text], "bad" if then.k == "police_run" else "crime")
-	var quit := "Call the train now" if game == "train" else ("Bail out" if game in ["loot", "containers", "sneak", "safe"] else "Give up")
+	var quit := "Call the train now" if game == "train" else ("Bail out" if game in ["loot", "containers", "sneak", "safe"] else ("Back to the cell" if game == "jailbreak" else "Give up"))
 	state.pending = {"kind": "mini", "player": p.id, "title": title, "text": text, "options": [
 		{"id": "give_up", "label": quit, "enabled": true},
 	]}
@@ -1212,6 +1311,12 @@ func _end_mini(p: Dictionary) -> void:
 				_result(p, "Ransom: tricked!", "The %s got away with the money case. %s got nothing." % [then.who, p.name], false)
 		"practice":
 			_result(p, "Practice run", _practice_line(m), won)
+		"jailbreak":
+			var pct := int(100.0 * int(m.dig) / maxf(1.0, float(m.dig_max)))
+			var left := "That was the last month." if int(p.jail) == 0 else "%d more month%s to go." % [p.jail, "" if p.jail == 1 else "s"]
+			var how := "%s gave up and went back to the cell." % p.name if m.gave_up else \
+				"The vent was %d%% off when the guard grabbed %s by the collar. Big Lou laughed so hard he lost his shorts." % [pct, p.name]
+			_result(p, "Back to the cell", "%s %s" % [how, left], false)
 		"crime":
 			_crime_mini_outcome(p, m, then)
 		"smuggle":
@@ -1366,10 +1471,11 @@ func _fight_outcome(p: Dictionary, then: Dictionary, won: bool, text: String) ->
 		"police":
 			var how: String = then.how
 			if won:
-				var titles := {"shootout": "Shootout won", "double": "Double-crossed", "caught": "Cornered"}
+				var titles := {"shootout": "Shootout won", "double": "Double-crossed", "caught": "Cornered", "stakeout": "Fought free"}
 				var lead := {"shootout": "%s shot it out with the cops and won." % p.name,
 					"double": "They took the money and drew their guns anyway. %s shot their way out." % p.name,
-					"caught": "They cornered %s, who fought free." % p.name}
+					"caught": "They cornered %s, who fought free." % p.name,
+					"stakeout": "The stakeout went wrong for the cops: %s's crew fought their way out." % p.name}
 				p.heat = int(p.heat) + (4 if how == "shootout" else 3)
 				_result(p, titles[how], "%s %s" % [lead[how], text], true)
 			else:
@@ -1393,6 +1499,16 @@ func _fight_outcome(p: Dictionary, then: Dictionary, won: bool, text: String) ->
 				_protection_attempt(p, state.city.buildings[int(then.b)])
 			else:
 				_result(p, "Turf trouble", "%s's people already run this block and they ran %s off. %s" % [prot.get("name", "Someone"), p.name, text], false)
+		"eddie":
+			p.loan = 0
+			p.loan_months = 0
+			p.eddie_due = false
+			if won:
+				_result(p, "Eddie's crew is down", "%s fought off Easy Eddie and his whole crew. Eddie tears up the IOU: the debt is settled. %s" % [p.name, text], true)
+			else:
+				_break_legs(p)
+				_result(p, "Eddie collects", "Eddie's boys held %s down and broke both legs. The debt is settled, but %s is in a wheelchair for good and will never have the same energy again (-%d). %s" % [
+					p.name, p.name, Balance.LEGS_STAMINA, text], false)
 		"gang_war":
 			var o: Dictionary = state.players[int(then.target)]
 			var winner: Dictionary = p if won else o
@@ -1551,6 +1667,14 @@ func _exec(p: Dictionary, a: PackedStringArray) -> void:
 			p.menu_path = []
 			_log("%s rode across town to %s." % [p.name, dest.name], "move")
 			_back_at_scene(p, dest)
+		"impound":
+			var ci3 := int(p.impound)
+			var fee2 := impound_fee(ci3)
+			p.cash = int(p.cash) - fee2
+			p.car = ci3
+			p.car_stolen = false
+			p.impound = 0
+			_result(p, "Out of the impound lot", "%s paid the $%d fee and drives the %s home." % [p.name, fee2, Balance.CARS[ci3].name], true)
 		"bribe_chief":
 			var months2 := int(a[1])
 			var cost := (2000 + 1000 * rank_of(p)) * months2

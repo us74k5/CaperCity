@@ -20,7 +20,7 @@ const GRENADE := 8
 const FIST := Vector3(-0.1, 0.27, 0.21)
 # Fighters' looks by role. Crew looks match their city tokens (see city_view.gd CREW_LOOKS).
 const ROLE_LOOKS := {"cop": "character-male-c", "guard": "character-male-d", "thug": "character-male-a",
-	"civilian": "character-female-d"}
+	"civilian": "character-female-d", "eddie": "character-male-f"}
 const C_MOVE := Color(0.21, 0.82, 0.73, 0.55)
 const C_HIT := Color("#FF5D4F")
 const C_CUR := Color("#F2EEE6")
@@ -230,6 +230,8 @@ func _play_event(ev: Dictionary) -> void:
 		"backup":
 			_float_text(center() - global_position, "BACKUP ARRIVES", Color("#FF9C90"))
 			_timer = 0.8
+		"legs":
+			_break_legs(_units.get(int(ev.get("victim", -1)), {}))
 
 
 # ------------------------------------------------------------------ weapons
@@ -437,6 +439,35 @@ func _land(u: Dictionary, t: Dictionary, ev: Dictionary, to2: Vector2i, dmg: int
 		Sfx.play("body_fall", -2.0, 0.06, 0.45)
 		_float_text(t.node.position + Vector3(0, 0.3, 0), "DOWN", Color("#F2C230"))
 	_relabel(t, false)
+
+
+## Easy Eddie's price for an unpaid loan: his men close in around the beaten boss and break his legs.
+func _break_legs(v: Dictionary) -> void:
+	if v.is_empty():
+		return
+	var spots := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	var men: Array = []
+	for u in _units.values():
+		if int(u.side) == 1 and int(u.hp) > 0 and men.size() < spots.size():
+			var spot: Vector2i = v.pos + spots[men.size()]
+			u.pos = Vector2i(clampi(spot.x, 0, Fight.W - 1), clampi(spot.y, 0, Fight.H - 1))
+			var d: Vector3 = _world(v.pos) - _world(u.pos)
+			u.node.rotation.y = atan2(d.x, d.z)
+			_play(u.anim, "walk")
+			men.append(u)
+	_play(v.anim, "die")
+	_float_text(_world(Vector2i(maxi(v.pos.x, 3), v.pos.y)), "EDDIE COLLECTS", Color("#FF9C90"))
+	for k in 2:
+		get_tree().create_timer(1.0 + 0.7 * k).timeout.connect(func():
+			for u in men:
+				_play(u.anim, "attack-kick-right" if k == 0 else "attack-melee-right", true)
+			_float_text(v.node.position + Vector3(0.3 * k, 0.3 * k, 0), "CRACK!", Color("#FFE27A"))
+			Sfx.play("club_hit")
+			_shake = 0.25)
+	get_tree().create_timer(2.6).timeout.connect(func():
+		for u in men:
+			_stance(u))
+	_timer = 3.0
 
 
 func _float_text(at: Vector3, text: String, col: Color) -> void:

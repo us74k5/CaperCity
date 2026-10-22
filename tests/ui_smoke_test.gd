@@ -9,6 +9,8 @@ var shots_dir := ""
 var shot_n := 0
 var tap_target := -1
 var tap_frame := 0
+var tap_pos: Array = []
+var fails := 0
 
 
 func _init() -> void:
@@ -33,15 +35,15 @@ func _process(_d: float) -> bool:
 		net.send_intent({"t": "start", "target": 20})
 	elif frame == 30:
 		_shot("town")
-		_tap_nearest_building()
+		_click_nearest_building()
 	elif tap_target >= 0:
-		var a0: Dictionary = net.active_player()
-		if int(a0.inside) == tap_target:
-			print("tap-to-walk: entered building %d after %d frames" % [tap_target, frame - tap_frame])
-			_shot("tap_walk")
-			tap_target = -1
-		elif frame - tap_frame > 3000 or not net.state.pending.is_empty():
-			print("tap-to-walk: did not arrive (inside=%s pending=%s)" % [a0.inside, not net.state.pending.is_empty()])
+		# Clicking the map no longer walks anywhere: still on the same square, nothing queued.
+		if frame - tap_frame >= 120:
+			var a0: Dictionary = net.active_player()
+			var still: bool = a0.pos == tap_pos and int(a0.inside) == -1 and main.get("_hud")._path.is_empty()
+			print("click-to-walk: %s" % ("off (stayed put)" if still else "FAILED: the click moved %s" % a0.name))
+			if not still:
+				fails += 1
 			tap_target = -1
 	elif frame > 30 and frame < 900:
 		var s: Dictionary = net.state
@@ -67,25 +69,25 @@ func _process(_d: float) -> bool:
 	return false
 
 
-func _tap_nearest_building() -> void:
-	var hud: Node = main.get("_hud")
+## Clicks (press and release, no drag) on the nearest building, as a player would have to walk there.
+func _click_nearest_building() -> void:
+	var cv: Node = main.get("_city_view")
 	var a: Dictionary = net.active_player()
-	var start := Vector2i(int(a.pos[0]), int(a.pos[1]))
-	var best := -1
-	var best_len := 999
+	var best: Dictionary = {}
 	for b in net.state.city.buildings:
-		var route: Array = hud._find_path(start, Vector2i(int(b.x), int(b.y)))
-		if route.size() > 0 and route.size() < best_len and route.size() <= int(a.steps):
-			best = int(b.id)
-			best_len = route.size()
-	if best < 0:
-		print("tap-to-walk: no reachable building")
-		return
-	var tb: Dictionary = net.state.city.buildings[best]
-	print("tap-to-walk: tapping %s, %d steps away" % [tb.name, best_len])
-	tap_target = best
+		if best.is_empty() or Vector2(int(b.x), int(b.y)).distance_to(Vector2(int(a.pos[0]), int(a.pos[1]))) \
+				< Vector2(int(best.x), int(best.y)).distance_to(Vector2(int(a.pos[0]), int(a.pos[1]))):
+			best = b
+	var at: Vector2 = cv.camera.unproject_position(Vector3(int(best.x) + 1, 0, int(best.y) + 1))
+	for pressed in [true, false]:
+		var ev := InputEventMouseButton.new()
+		ev.button_index = MOUSE_BUTTON_LEFT
+		ev.pressed = pressed
+		ev.position = at
+		cv._unhandled_input(ev)
+	tap_target = int(best.id)
 	tap_frame = frame
-	hud._on_cell_tapped(Vector2i(int(tb.x), int(tb.y)))
+	tap_pos = a.pos.duplicate()
 
 
 func _go_toward_building(a: Dictionary, s: Dictionary) -> void:
@@ -120,5 +122,5 @@ func _finish() -> bool:
 	if frame >= 900:
 		print("leave: %s" % ("back on the title screen" if main.get("_current") == "menu" else "FAIL: still on %s" % main.get("_current")))
 	_shot("end")
-	quit(0)
+	quit(1 if fails > 0 else 0)
 	return true

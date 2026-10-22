@@ -76,6 +76,11 @@ const GEAR := [
 	{"name": "Grenades", "price": 10000, "power": 14, "reach": 12, "aim": 0.95, "smarts": 60, "nerve": 40},
 ]
 const PISTOL := 5
+const RIFLE := 6
+const MACHINE_GUN := 7
+const WHEELCHAIR_STEPS := 15     # a turn's steps on wheels (no motorway, no car unless someone else drives)
+const RELEASE_STAMINA := 10      # energy lost to a stretch in jail
+const LEGS_STAMINA := 25         # energy lost for good when Eddie's boys break your legs
 
 # Building types. count = how many in the city (as on the original map, see CityMap). color = roof color. sign = rooftop sign.
 const BUILDINGS := {

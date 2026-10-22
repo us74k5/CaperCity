@@ -1,5 +1,5 @@
 extends SceneTree
-## Jail (car, weapons and a fine), going back to the scene of a crime, Easy Eddie's collectors, and
+## Jail (car, weapons and a fine), going back to the scene of a crime, Easy Eddie's reminder, and
 ## the fight screen clearing after a won kidnapping's ransom prompt.
 ## Run: godot --headless --path . --script res://tests/jail_test.gd
 
@@ -27,14 +27,17 @@ func _init() -> void:
 	_check(int(ana.car) == 0, "the car is impounded")
 	_check(ana.crew.all(func(m): return int(m.gear) == 0), "the weapons are gone")
 	_check(int(ana.cash) == 2500, "a $500 fine (cash %d)" % ana.cash)
-	_check("impounded" in text and "$500" in text, "the result says so")
+	_check("impound lot" in text and "$500" in text, "the result says so")
 	ana.jail = 0
 	ana.cash = 200
 	gs._arrest(ana)
 	_check(int(ana.cash) == 0, "a short crew pays what it has")
 	ana.jail = 0
 
-	# Going back to where you committed a crime is an arrest on the spot.
+	# Going back to where you committed a crime is an arrest on the spot (on your own: a crew fights
+	# it out first, see turn_rules_test).
+	while ana.crew.size() > 1:
+		ana.crew.pop_back()
 	var lot := _building("car_dealer")
 	var bank := _building("bank")
 	ana.cash = 5000
@@ -100,22 +103,15 @@ func _init() -> void:
 	_check(gs.state.fight.is_empty() and gs.state.mini.is_empty(), "the fight screen is gone")
 	_check(int(ana.inside) == -1, "and after a crime you're back on the street")
 
-	# Easy Eddie: a reminder the month before, a short sentence, and news when you're back.
+	# Easy Eddie: a reminder the month before (what he does after is in turn_rules_test).
 	gs.state.pending = {}
-	ana.loan = 40000
-	ana.loan_months = 1
-	ana.cash = 1000
-	ana.car = 2
 	bo.loan = 1000
 	bo.loan_months = 2
 	_end_turns_until(2)
 	_check(gs.state.pending.get("title", "") == "Easy Eddie", "Bo hears his loan is due (%s)" % gs.state.pending.get("title", ""))
 	gs.state.pending = {}
-	_end_turns_until(1, 2)   # Ana's loan falls due at the month's end
-	_check(int(ana.loan) == 0 and int(ana.car) == 0, "the collectors took the car")
-	print("eddie: ", gs.state.pending.get("text", ""))
-	_check(gs.state.pending.get("title", "") == "While you were away", "Ana hears what happened when she's out")
-	_check("collectors" in str(gs.state.pending.get("text", "")), "and why")
+	bo.loan = 0
+	bo.loan_months = 0
 
 	# Out of jail with nothing on you: a checkpoint waves you on.
 	gs.state.pending = {}

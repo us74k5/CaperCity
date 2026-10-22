@@ -64,7 +64,6 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	Net.state_updated.connect(refresh)
 	if city_view:
-		city_view.cell_tapped.connect(_on_cell_tapped)
 		city_view.fight_square_tapped.connect(_on_fight_square)
 		city_view.table_tapped.connect(_on_table)
 	_build()
@@ -349,6 +348,14 @@ func refresh() -> void:
 	if not me.is_empty():
 		var rank: String = Balance.RANKS[mini(8, int(me.points) * 9 / maxi(1, int(s.target)))]
 		var car: String = Balance.CARS[int(me.car)].name
+		if me.get("chair", false):
+			var how := "for good" if me.get("legs_broken", false) else ("last turn" if int(me.wheelchair) == 0 else "%d more turn%s" % [int(me.wheelchair), "" if int(me.wheelchair) == 1 else "s"])
+			if int(me.car) > 0 and me.crew.size() >= 2:
+				car = "%s (crew drives) · wheelchair %s" % [car, how]
+			else:
+				car = "Wheelchair, %s" % how
+		if int(me.get("impound", 0)) > 0:
+			car += " · %s impounded" % Balance.CARS[int(me.impound)].name
 		var extra := ""
 		if int(me.jail) > 0:
 			extra = "  [color=#FF9C90]in jail[/color]"
@@ -915,25 +922,6 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		city_view.follow()
 
 
-func _on_cell_tapped(cell: Vector2i) -> void:
-	if not Net.is_my_turn() or not Net.state.pending.is_empty():
-		return
-	var a := Net.active_player()
-	if int(a.inside) >= 0:
-		return
-	var start := Vector2i(int(a.pos[0]), int(a.pos[1]))
-	var route := _find_path(start, cell)
-	if route.is_empty():
-		return
-	var need := _route_steps(start, route)
-	if need > int(a.steps):
-		Net.error_message.emit("That's %d steps away. You have %d left." % [need, a.steps])
-		return
-	_path = route
-	_path_timer = 0.0
-	city_view.follow()
-
-
 # ------------------------------------------------------------------ police stop
 
 func _build_police_panel() -> void:
@@ -1078,6 +1066,8 @@ func _refresh_casino(s: Dictionary, active: Dictionary, inside: bool, mine: bool
 	var sub := "Pick a table" if table == "" else "Place your bet"
 	if not mine:
 		sub = "%s is at the tables" % active.name
+	# The bankroll, straight from the server: a win is in it the moment it's dealt.
+	head.add_child(UiTheme.label("Cash $%s" % _money(int(active.cash)), 18, UiTheme.YELLOW))
 	head.add_child(UiTheme.label(sub, 14, UiTheme.MUTED))
 	_casino_box.add_child(head)
 	var chip_colors := [Color("#C8423B"), Color("#2F5FA8"), Color("#2B2F36")]

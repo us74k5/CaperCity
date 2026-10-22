@@ -162,6 +162,8 @@ func _hint_text(m: Dictionary, mine: bool) -> String:
 				return "The vault swings open!" if m.won else "ALARM!"
 			"train":
 				return "The train is stopped!" if m.won else "The train got through."
+			"jailbreak":
+				return "Back to the cell."
 		return "Out!" if m.won else "Time's up!"
 	if int(m.ready) > 0:
 		return "Get ready… arrows, WASD or the pad." if mine else "%s is about to start." % who
@@ -182,6 +184,10 @@ func _hint_text(m: Dictionary, mine: bool) -> String:
 			return "Push containers up onto the track. Call the train when you're ready."
 		"safe":
 			return "Up/down turns the dial, left/right picks one. Listen for the click that sounds different."
+		"jailbreak":
+			if m.get("phase", "") == "caught":
+				return "Footsteps. The guard's round…"
+			return "Get out of the stall, past Big Lou, and keep pushing into the vent on the right wall to pry it loose."
 	return ""
 
 
@@ -197,6 +203,8 @@ func _score_text(m: Dictionary) -> String:
 			return "On the track: %d · need %d" % [int(m.got), int(m.need)]
 		"sneak":
 			return "%d guards on patrol" % m.guards.size()
+		"jailbreak":
+			return "Vent: %d%% loose" % int(100.0 * float(m.dig) / maxf(1.0, float(m.dig_max)))
 	return ""
 
 

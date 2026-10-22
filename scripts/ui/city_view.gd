@@ -248,7 +248,9 @@ func _process(delta: float) -> void:
 		var fit := maxf(Mini.H + 5.5, (Mini.W + 2.0) / maxf(0.5, vs.x / maxf(1.0, vs.y)))
 		var d := fit / 2.0 / tan(deg_to_rad(camera.fov / 2.0)) * 0.98
 		var look: Vector3 = mini_view.center() + Vector3(0, 0, -1.4)   # the grid sits low, clear of the minigame bar
-		camera.position = look + Vector3(0, sin(MINI_PITCH), cos(MINI_PITCH)) * d
+		# The jailbreak is watched from lower down, so the people (and Big Lou's moment) read.
+		var pitch: float = deg_to_rad(52.0) if Net.state.mini.get("game", "") == "jailbreak" else MINI_PITCH
+		camera.position = look + Vector3(0, sin(pitch), cos(pitch)) * d
 		camera.look_at(look, Vector3.UP)
 		return
 	elif mini_view.showing():
@@ -298,7 +300,7 @@ func _ground_at(screen_pos: Vector2) -> Vector3:
 func _unhandled_input(event: InputEvent) -> void:
 	# Touch arrives as emulated mouse clicks (Godot default), so one branch handles both.
 	# On the map, left or right button (or a finger) drags it around; a left click that didn't drag
-	# is a tap (walk there), sent on release.
+	# is a tap, sent on release (walking is the d-pad and keys only; nothing walks on a click).
 	if event is InputEventMouseButton and event.button_index in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT] and _on_map():
 		if event.pressed:
 			_press = {"button": event.button_index, "at": event.position, "last": event.position, "dragged": false}
@@ -695,8 +697,17 @@ func _update_token(pid, p: Dictionary, pos: Vector3, prev: Vector3) -> void:
 	var node: Node3D = tk.node
 	node.visible = int(p.jail) <= 0 and int(p.holiday) <= 0
 	node.position = pos
-	var has_car := int(p.car) > 0
+	# In a wheelchair the car only goes out if someone in the crew can drive it.
+	var chair: bool = p.get("chair", false)
+	var has_car: bool = int(p.car) > 0 and (not chair or p.crew.size() >= 2)
 	var moving := (pos - prev).length() > 0.002
+	if chair and not has_car and tk.get("chair") == null:
+		var wc: Node3D = load(MODELS + "characters/wheelchair.glb").instantiate()
+		wc.scale = Vector3.ONE * 0.9
+		node.add_child(wc)
+		tk.chair = wc
+	if tk.get("chair") != null:
+		tk.chair.visible = chair and not has_car
 	if has_car and int(tk.car_ci) != int(p.car):
 		# The same model as on the dealer's lot, with the boss riding up through the sunroof.
 		if tk.car:
@@ -710,7 +721,12 @@ func _update_token(pid, p: Dictionary, pos: Vector3, prev: Vector3) -> void:
 	var person: Node3D = tk.person
 	person.position.y = float(tk.roof) - 0.3 if has_car else 0.0
 	person.scale = Vector3.ONE * (0.6 if has_car else 0.9)
-	_play(tk.anim, "drive" if has_car else ("walk" if moving else "idle"))
+	if has_car:
+		_play(tk.anim, "drive")
+	elif chair:
+		_play(tk.anim, "wheelchair-move-forward" if moving else "wheelchair-sit")
+	else:
+		_play(tk.anim, "walk" if moving else "idle")
 	if moving:
 		node.rotation.y = atan2(pos.x - prev.x, pos.z - prev.z)
 	tk.label.text = p.name
@@ -740,7 +756,7 @@ func _make_token(look: String, col: Color, label: String) -> Dictionary:
 	node.add_child(l)
 	# The car (see CarModels) is added once they own one.
 	return {"node": node, "person": person, "anim": _anim_player(person), "car": null, "car_ci": 0, "roof": 0.0,
-		"label": l, "look": look}
+		"chair": null, "label": l, "look": look}
 
 
 ## Places an extra (non-player) character in the city, looping one animation.
@@ -757,7 +773,7 @@ func _add_extra(model: String, pos: Vector3, turn: float, anim: String) -> void:
 
 func _anim_player(model: Node) -> AnimationPlayer:
 	var ap: AnimationPlayer = model.find_children("*", "AnimationPlayer", true, false)[0]
-	for a in ["idle", "walk", "drive"]:
+	for a in ["idle", "walk", "drive", "wheelchair-sit", "wheelchair-move-forward"]:
 		ap.get_animation(a).loop_mode = Animation.LOOP_LINEAR
 	return ap
 
