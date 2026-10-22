@@ -464,6 +464,9 @@ func _find_path(start: Vector2i, goal: Vector2i) -> Array:
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event.pressed:
 		return
+	if event is InputEventKey and event.keycode == KEY_M:
+		Music.toggle()
+		return
 	var map := {KEY_UP: "N", KEY_DOWN: "S", KEY_LEFT: "W", KEY_RIGHT: "E", KEY_W: "N", KEY_S: "S", KEY_A: "W", KEY_D: "E"}
 	if event is InputEventKey and map.has(event.keycode) and Net.is_my_turn() and Net.state.pending.is_empty():
 		_path.clear()
