@@ -14,6 +14,7 @@ const MIN_W := 3.5              # ...but never narrower than this
 const MAX_H := 9.0              # nor taller than this
 const PAVE_Z := 1.25            # middle of the front pavement
 const CURB_Z := 3.15            # where parked cars stand
+const CAR_LEN := 2.5            # a car's length in the building scenes
 const LANE_Z := 4.3             # where passing cars drive
 const NEIGHBOURS := ["commercial/building-a", "commercial/building-b", "commercial/building-d", "commercial/building-f",
 	"commercial/building-g", "commercial/building-c", "commercial/building-e", "industrial/building-d"]
@@ -211,7 +212,7 @@ func _build(b: Dictionary, p: Dictionary) -> void:
 	var me := Vector3(-1.4, 0, 1.0) if t != "playground" else Vector3(-1.2, 0, 2.0)
 	_person(UiTheme.look_of(p), me, 0.35, "idle")
 	if int(p.car) > 0 and t != "harbor":
-		_car(Color(p.color), Vector3(-8.5, 0, CURB_Z), PI / 2)
+		_own_car(int(p.car), Vector3(-8.5, 0, CURB_Z), PI / 2)
 	if t != "harbor":
 		_traffic(rng)
 	_walker(rng)
@@ -462,66 +463,43 @@ func _person(model: String, pos: Vector3, turn: float, anim: String, k := PERSON
 	return node
 
 
-## A boxy car: body, cabin with dark windows, wheels. Faces +Z at turn 0.
+## A parked or passing car (see CarModels), faces +Z at turn 0: a model picked by `col` from the
+## street colors, yellow for a taxi, or the black limo.
 func _car(col: Color, pos: Vector3, turn: float, limo := false) -> Node3D:
-	var car := Node3D.new()
-	var length := 3.2 if limo else 2.3
-	var body := _flat(col)
-	body.roughness = 0.35
-	body.metallic = 0.3
-	_part(car, Vector3(1.05, 0.42, length), Vector3(0, 0.42, 0), body)
-	_part(car, Vector3(0.95, 0.36, length * (0.62 if limo else 0.5)), Vector3(0, 0.8, -0.05), _flat(Color("#1E2430")))
-	_part(car, Vector3(0.9, 0.06, length * (0.6 if limo else 0.48)), Vector3(0, 1.0, -0.05), body)
-	for sx in [-0.5, 0.5]:
-		for sz in [-length * 0.32, length * 0.32]:
-			var wheel := MeshInstance3D.new()
-			var cyl := CylinderMesh.new()
-			cyl.top_radius = 0.22
-			cyl.bottom_radius = 0.22
-			cyl.height = 0.16
-			wheel.mesh = cyl
-			wheel.material_override = _flat(Color("#16181C"))
-			wheel.rotation.z = PI / 2
-			wheel.position = Vector3(sx, 0.22, sz)
-			car.add_child(wheel)
-	for sx in [-0.32, 0.32]:
-		var lamp := _flat(Color("#FFF4C8"))
-		lamp.emission_enabled = true
-		lamp.emission = Color("#FFE9A0")
-		lamp.emission_energy_multiplier = 0.6
-		_part(car, Vector3(0.22, 0.1, 0.04), Vector3(sx, 0.48, length / 2.0), lamp)
+	var car: Node3D
+	if limo:
+		car = CarModels.car(7, 3.2)
+	else:
+		var i := CAR_COLORS.find(col)
+		var name: String = "taxi" if col == Color("#E8B923") else CarModels.TRAFFIC[maxi(i, 0) % CarModels.TRAFFIC.size()]
+		car = CarModels.model(name, CAR_LEN)
+	return _put(car, pos, turn)
+
+
+## Player `p`'s own car, the model they bought or stole.
+func _own_car(ci: int, pos: Vector3, turn: float) -> Node3D:
+	return _put(CarModels.car(ci, CAR_LEN), pos, turn)
+
+
+func _put(car: Node3D, pos: Vector3, turn: float) -> Node3D:
 	car.position = pos
 	car.rotation.y = turn
 	_set.add_child(car)
 	return car
 
 
-func _van(col: Color, pos: Vector3) -> void:
-	var van := Node3D.new()
-	_part(van, Vector3(1.15, 1.25, 2.8), Vector3(0, 0.85, -0.2), _flat(col))
-	_part(van, Vector3(1.1, 0.42, 0.5), Vector3(0, 1.0, 1.2), _flat(Color("#1E2430")))
-	_part(van, Vector3(1.15, 0.5, 0.6), Vector3(0, 0.5, 1.25), _flat(col))
-	for sx in [-0.55, 0.55]:
-		for sz in [-1.0, 0.9]:
-			var w := _part(van, Vector3(0.16, 0.44, 0.44), Vector3(sx, 0.22, sz), _flat(Color("#16181C")))
-			w.mesh = CylinderMesh.new()
-			(w.mesh as CylinderMesh).top_radius = 0.22
-			(w.mesh as CylinderMesh).bottom_radius = 0.22
-			(w.mesh as CylinderMesh).height = 0.16
-			w.rotation.z = PI / 2
-	van.position = pos
-	van.rotation.y = PI / 2
-	_set.add_child(van)
+func _van(_col: Color, pos: Vector3) -> void:
+	_put(CarModels.model("delivery", 3.0), pos, PI / 2)
 
 
 func _police_car(pos: Vector3) -> void:
-	var car := _car(Color("#E9ECF2"), pos, PI / 2)
-	_part(car, Vector3(1.07, 0.18, 1.2), Vector3(0, 0.45, 0.1), _flat(Color("#1F2A44")))
+	var car := _put(CarModels.model("police", CAR_LEN), pos, PI / 2)
+	var roof: float = CarModels.aabb(car.get_child(0)).size.y * car.get_child(0).scale.y
 	for i in 2:
 		var mat := StandardMaterial3D.new()
 		mat.emission_enabled = true
 		mat.emission_energy_multiplier = 2.5
-		_part(car, Vector3(0.36, 0.12, 0.2), Vector3(-0.2 + 0.4 * i, 1.1, -0.05), mat)
+		_part(car, Vector3(0.36, 0.12, 0.2), Vector3(-0.2 + 0.4 * i, roof + 0.04, -0.05), mat)
 		_lights.append(mat)
 
 

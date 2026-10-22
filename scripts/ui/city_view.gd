@@ -17,6 +17,7 @@ const MINI := Vector3(-150, 0, -40)   # where the grid minigames are staged
 const MINI_PITCH := deg_to_rad(72.0)
 const PLACE := Vector3(-150, 0, 40)  # where the inside-a-building scene is staged, well away from town
 const MAX_HEIGHT := 3.2    # tallest a model may be after scaling to its lot
+const TOKEN_CAR_LEN := 0.95  # players' cars and the squad car on the map
 
 # Building looks: model variants (kit/name) per type. A building picks one by its id.
 const LOOKS := {
@@ -181,7 +182,7 @@ func casino_busy() -> bool:
 ## True while a grid minigame is on screen (it takes over from everything else). The safe isn't one:
 ## it plays over the bank's scene.
 func in_mini() -> bool:
-	return Mini.is_grid(Net.state.get("mini", {})) and Net.state.get("phase", "") == "playing"
+	return Mini.is_grid(Net.state.get("mini", {})) and Net.state.get("phase", "") == "playing" and not in_fight()
 
 
 ## True while the active player is inside a building and its scene is on screen (a fight takes over).
@@ -696,18 +697,27 @@ func _update_token(pid, p: Dictionary, pos: Vector3, prev: Vector3) -> void:
 	node.position = pos
 	var has_car := int(p.car) > 0
 	var moving := (pos - prev).length() > 0.002
-	tk.car.visible = has_car
+	if has_car and int(tk.car_ci) != int(p.car):
+		# The same model as on the dealer's lot, with the boss riding up through the sunroof.
+		if tk.car:
+			tk.car.queue_free()
+		tk.car = CarModels.car(int(p.car), TOKEN_CAR_LEN)
+		node.add_child(tk.car)
+		tk.car_ci = int(p.car)
+		tk.roof = CarModels.aabb(tk.car.get_child(0)).size.y * tk.car.get_child(0).scale.y
+	if tk.car:
+		tk.car.visible = has_car
 	var person: Node3D = tk.person
-	person.position.y = 0.06 if has_car else 0.0
-	person.scale = Vector3.ONE * (0.7 if has_car else 0.9)
+	person.position.y = float(tk.roof) - 0.3 if has_car else 0.0
+	person.scale = Vector3.ONE * (0.6 if has_car else 0.9)
 	_play(tk.anim, "drive" if has_car else ("walk" if moving else "idle"))
 	if moving:
 		node.rotation.y = atan2(pos.x - prev.x, pos.z - prev.z)
 	tk.label.text = p.name
 
 
-## A player's token: their character on a disc of the player's color, plus an open-top car they
-## sit in once they own one.
+## A player's token: their character on a disc of the player's color, plus their car once they
+## own one.
 func _make_token(look: String, col: Color, label: String) -> Dictionary:
 	var node := Node3D.new()
 	add_child(node)
@@ -725,30 +735,12 @@ func _make_token(look: String, col: Color, label: String) -> Dictionary:
 	var person: Node3D = load(MODELS + "characters/" + look + ".glb").instantiate()
 	node.add_child(person)
 
-	var car := Node3D.new()
-	var body_mat := _flat(col)
-	body_mat.roughness = 0.5
-	var chassis := MeshInstance3D.new()
-	var cbox := BoxMesh.new()
-	cbox.size = Vector3(0.44, 0.16, 0.8)
-	chassis.mesh = cbox
-	chassis.material_override = body_mat
-	chassis.position.y = 0.12
-	car.add_child(chassis)
-	var screen := MeshInstance3D.new()
-	var sbox := BoxMesh.new()
-	sbox.size = Vector3(0.4, 0.12, 0.03)
-	screen.mesh = sbox
-	screen.material_override = _flat(Color("#1E2430"))
-	screen.position = Vector3(0, 0.26, 0.14)
-	screen.rotation.x = deg_to_rad(-25)
-	car.add_child(screen)
-	node.add_child(car)
-
 	var l := _label(label, 44, Color.WHITE)
 	l.position.y = 1.0
 	node.add_child(l)
-	return {"node": node, "person": person, "anim": _anim_player(person), "car": car, "label": l, "look": look}
+	# The car (see CarModels) is added once they own one.
+	return {"node": node, "person": person, "anim": _anim_player(person), "car": null, "car_ci": 0, "roof": 0.0,
+		"label": l, "look": look}
 
 
 ## Places an extra (non-player) character in the city, looping one animation.
@@ -779,28 +771,8 @@ func _play(ap: AnimationPlayer, anim: String) -> void:
 func _make_police_stop() -> Node3D:
 	var root := Node3D.new()
 	root.visible = false
-	var car := Node3D.new()
-	var body := MeshInstance3D.new()
-	var bbox := BoxMesh.new()
-	bbox.size = Vector3(0.46, 0.2, 0.86)
-	body.mesh = bbox
-	body.material_override = _flat(Color("#1F2A44"))
-	body.position.y = 0.14
-	car.add_child(body)
-	var door := MeshInstance3D.new()
-	var dbox := BoxMesh.new()
-	dbox.size = Vector3(0.47, 0.08, 0.4)
-	door.mesh = dbox
-	door.material_override = _flat(Color("#E9ECF2"))
-	door.position = Vector3(0, 0.15, 0)
-	car.add_child(door)
-	var cab := MeshInstance3D.new()
-	var cbox := BoxMesh.new()
-	cbox.size = Vector3(0.4, 0.14, 0.42)
-	cab.mesh = cbox
-	cab.material_override = _flat(Color("#1E2430"))
-	cab.position = Vector3(0, 0.31, -0.04)
-	car.add_child(cab)
+	var car := CarModels.model("police", TOKEN_CAR_LEN)
+	var roof: float = CarModels.aabb(car.get_child(0)).size.y * car.get_child(0).scale.y
 	for i in 2:
 		var light := MeshInstance3D.new()
 		var lbox := BoxMesh.new()
@@ -809,7 +781,7 @@ func _make_police_stop() -> Node3D:
 		var mat := StandardMaterial3D.new()
 		mat.emission_enabled = true
 		light.material_override = mat
-		light.position = Vector3(-0.08 + 0.16 * i, 0.41, -0.04)
+		light.position = Vector3(-0.08 + 0.16 * i, roof + 0.02, -0.04)
 		car.add_child(light)
 		_police_lights.append(mat)
 	car.position = Vector3(0.75, 0, -0.1)

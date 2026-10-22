@@ -183,7 +183,7 @@ func _join(peer: int, pname: String, crew: String, local: bool, token: String = 
 		"crew": [boss], "car": 0, "pos": [0, 0], "steps": 0, "steps_max": Balance.CARS[0].steps,
 		"inside": -1, "menu_path": [], "menu": [], "half_step": false, "stopped": false,
 		"jail": 0, "holiday": 0, "room": false, "rent_paid": 0,
-		"loan": 0, "loan_months": 0, "passport": false, "immunity": 0, "heat": 0, "scenes": [], "new_scene": "", "news": "", "clean": false, "car_stolen": false,
+		"loan": 0, "loan_months": 0, "passport": false, "immunity": 0, "heat": 0, "scenes": [], "new_scene": "", "news": "", "clean": false, "car_stolen": false, "walk_out": false,
 		"radios": 0, "electronics": 0, "dirt": "", "hostage": {}, "ransom": {}, "suitcase": {},
 		"gang_war_used": false, "connected": true,
 		# Character creation (see _create_step): local seats skip it.
@@ -514,6 +514,11 @@ func _after_action(p: Dictionary) -> void:
 	if state.pending.is_empty():
 		state.fight = {}   # e.g. a won kidnapping fight followed by the ransom prompt
 		state.mini = {}
+		if p.get("walk_out", false):
+			p.walk_out = false
+			if int(p.inside) >= 0:
+				_log("%s slips back out onto the street." % p.name, "move")
+				_leave(p)
 	_check_win(p)
 	if state.phase != "playing":
 		return
@@ -914,14 +919,10 @@ func _do_crime(p: Dictionary, key: String) -> void:
 	if rng.randf() < _crime_odds(p, c):
 		_crime_success(p, c, b, "")
 		return
-	match str(c.fail):
-		"police":
-			_police_encounter(p, "%s went wrong. The cops are here!" % c.label, int(c.sev))
-		"fight":
-			var enemy: int = int(c.enemy) + rank_of(p)
-			var foe: String = c.get("foe", "guard")
-			_start_fight(p, c.label, "%s went wrong. %s's people come at you." % [c.label, b.name],
-				Fight.squad(foe, enemy, rng), {"k": "crime", "key": key, "b": b.id})
+	if str(c.fail) == "fight":
+		_crime_failed(p, "%s went wrong. %s's people raised the alarm." % [c.label, b.name], int(c.sev))
+	else:
+		_crime_failed(p, "%s went wrong. The cops are coming!" % c.label, int(c.sev))
 
 
 func _crime_success(p: Dictionary, c: Dictionary, b: Dictionary, prefix: String) -> void:
@@ -960,7 +961,7 @@ func _protection_attempt(p: Dictionary, b: Dictionary) -> void:
 		_add_points(p, 1)
 		_result(p, "Protection racket", "%s now pays %s $300 every month to stay in one piece." % [b.name, p.name], true)
 	else:
-		_police_encounter(p, "The owner called the cops instead of paying.", 3)
+		_crime_failed(p, "The owner called the cops instead of paying.", 3)
 
 
 # --------------------------------------------------------------------------- hostages
@@ -1019,6 +1020,7 @@ func _police_encounter(p: Dictionary, text: String, sev: int = 3) -> void:
 		_log("The cops recognize %s and look the other way. The chief has been paid." % p.name, "info")
 		return
 	sev = clampi(maxi(sev, _evidence(p)), 0, 10)
+	state.mini = {}
 	var bribe := 200 + 150 * sev + 300 * rank_of(p)
 	var cops := _cops(p, sev)
 	var on_foot := int(p.car) == 0
@@ -1032,6 +1034,19 @@ func _police_encounter(p: Dictionary, text: String, sev: int = 3) -> void:
 		{"id": "fight", "label": "Shoot it out", "enabled": true, "info": "Fight them right here."},
 	], "bribe": bribe, "cops": cops.size(), "armed": Balance.GEAR[cops[0].gear].name, "sev": sev,
 		"response": "Full response" if sev >= 8 else ("Patrol cars" if sev >= 4 else "A beat cop" if cops.size() == 1 else "Beat cops")}
+
+
+## A crime gone wrong: no standoff, just run for it (at the crime's severity, see Chase.cop_speed).
+## Caught, it's a fight with the cops; lose that and it's jail (see _end_mini).
+func _crime_failed(p: Dictionary, text: String, sev: int) -> void:
+	if int(p.immunity) > 0:
+		_result(p, "The cops look away", "%s The officers who turn up recognize %s and look the other way. The chief has been paid." % [text, p.name], false)
+		return
+	sev = clampi(maxi(sev, _evidence(p)), 0, 10)
+	state.fight = {}
+	_cue("police_alert")
+	_start_mini(p, "escape", "Run for it!", "%s Get away: stay clear of the cops for %d seconds." % [text, Chase.ESCAPE_SECONDS],
+		sev, {"k": "police_run", "sev": sev})
 
 
 ## How many officers come, and how armed, for a crime of severity `sev` (0-10): one or two for a
@@ -1142,6 +1157,7 @@ func _jail(p: Dictionary, months: int) -> String:
 ## Remembers a building where `p` committed a crime: walking back in later means arrest.
 func _mark_scene(p: Dictionary, b: Dictionary) -> void:
 	p.clean = false
+	p.walk_out = true   # one crime a visit: once it's played out, back to the street
 	if not p.scenes.has(int(b.id)):
 		p.scenes.append(int(b.id))
 		p.new_scene = b.name
@@ -1207,7 +1223,7 @@ func _end_mini(p: Dictionary) -> void:
 			elif m.gave_up:
 				_result(p, "Suitcase dumped", "%s lost their nerve and dumped the case in a bin. The bartender won't be pleased." % p.name, false)
 			else:
-				_police_encounter(p, "Customs spotted %s with the suitcase and called the police!" % p.name, 6)
+				_crime_failed(p, "Customs spotted %s with the suitcase and called the police!" % p.name, 6)
 	_after_action(p)
 
 
@@ -1235,9 +1251,7 @@ func _crime_mini_outcome(p: Dictionary, m: Dictionary, then: Dictionary) -> void
 			if won:
 				_crime_success(p, c, b, "Click, click, click... the vault swings open. ")
 			else:
-				state.mini = {}
-				_start_fight(p, "Alarm!", "The siren goes off and the police storm the vault.",
-					_cops(p, int(c.sev)), {"k": "police", "how": "caught", "sev": int(c.sev)})
+				_crime_failed(p, "The siren goes off. The police are on their way to the vault!", int(c.sev))
 		"train":
 			if won:
 				state.mini = {}
@@ -1250,7 +1264,7 @@ func _crime_mini_outcome(p: Dictionary, m: Dictionary, then: Dictionary) -> void
 				if m.gave_up:
 					_result(p, "Bailed out", "%s slipped out empty-handed." % p.name, false)
 				else:
-					_police_encounter(p, "Time's up: the police were waiting at the gate!", int(c.sev))
+					_crime_failed(p, "Time's up: the police are at the gate!", int(c.sev))
 			elif int(m.got) == 0:
 				_result(p, "Nothing taken", "%s got out, but nothing made it onto the truck." % p.name, false)
 			else:
@@ -1271,23 +1285,23 @@ func _crime_mini_outcome(p: Dictionary, m: Dictionary, then: Dictionary) -> void
 						_start_mini(p, "loot", "Clean out the electronics", "You're in. Push the goods to the back door and get out before the owners wake.",
 							rank_of(p), crime_then)
 						return
-					_police_encounter(p, "A light snaps on. The owner saw you and called the police!", int(c.sev))
+					_crime_failed(p, "A light snaps on. The owner saw you and called the police!", int(c.sev))
 				"money_transport":
 					if won:
 						state.mini = {}
 						_start_fight(p, c.label, "%s waited inside until the armored truck pulled up. Now take it from the guards." % p.name, guards, crime_then)
 					else:
-						_police_encounter(p, "A guard spotted %s and raised the alarm!" % p.name, int(c.sev))
+						_crime_failed(p, "A guard spotted %s and raised the alarm!" % p.name, int(c.sev))
 				_:
 					if won:
 						_crime_success(p, c, b, "Past the guards without a sound. ")
 					else:
-						state.mini = {}
-						_start_fight(p, c.label, "A guard spotted %s. The bodyguards close in." % p.name, guards, crime_then)
+						_crime_failed(p, "A guard spotted %s and raised the alarm!" % p.name, int(c.sev))
 
 
 ## Opens the fight screen: `p`'s crew (left) against `foes` (right). `then` says what happens after.
 func _start_fight(p: Dictionary, title: String, text: String, foes: Array, then: Dictionary) -> void:
+	state.mini = {}   # a finished minigame mustn't stay on screen over the fight
 	_cue("gang_war" if str(then.get("k", "")) in ["gang_war", "protection"] else "shootout")
 	state.fight = Fight.create(title, Fight.crew_units(p, 0), foes, then, true)
 	state.fights = int(state.get("fights", 0)) + 1
@@ -1434,7 +1448,7 @@ func _exec(p: Dictionary, a: PackedStringArray) -> void:
 				_add_points(p, 1)
 				_result(p, "Car stolen", "%s hot-wired a %s and peeled out of the lot." % [p.name, Balance.CARS[ci2].name], true)
 			else:
-				_police_encounter(p, "The alarm on the %s went off. The cops are here!" % Balance.CARS[ci2].name, 3 + ci2 / 3)
+				_crime_failed(p, "The alarm on the %s went off. The cops are coming!" % Balance.CARS[ci2].name, 3 + ci2 / 3)
 		"buy_gear":
 			var gi := int(a[1])
 			var mem: Dictionary = p.crew[int(a[2])]

@@ -73,6 +73,8 @@ Force a layout with `?mobile=1` or `?desktop=1` in the URL (or `-- --mobile` whe
   kidnapping with ransom drops, the casino, the subway and trains, the print shop, bribing the police chief and bailing out rivals.
 - Police checks on their own screen (a random stop while walking happens at most once a turn; heat makes it likelier) (squad car, officers, siren bar): make a run for it, bribe them, or shoot it out.
   Running for it is a real-time maze chase, as in the original: four cops close in and you must stay free for 20 seconds.
+  A crime that goes wrong skips the standoff and goes straight to the chase. One crime a visit: once it has played out
+  (pulled off, or you got away) you're back on the street, and walking back in means arrest.
   Your runner moves on your own screen the instant you press a key; the server checks each step.
   The response fits what they caught you at, or what they find on you: one or two beat cops (slow to chase) for a
   pickpocket or up to 5 stolen devices, four or five for a robbery, a stolen car or 6-10 devices, and the full squad
@@ -96,6 +98,7 @@ Force a layout with `?mobile=1` or `?desktop=1` in the URL (or `-- --mobile` whe
 
 ## Art
 The city is 3D, built from Kenney's City Kits (Commercial, Industrial, Suburban, Roads), Car Kit and Mini Characters, CC0, www.kenney.nl.
+Every car (the lot, players' cars on the map, squad cars, traffic) is a Car Kit model, see `scripts/ui/car_models.gd`.
 The models live in `assets/models/` with each kit's license. Each player is an animated character on a disc of their color
 (walking, idling, or driving once they own a car). Officers stand outside Police HQ and townsfolk idle by some buildings.
 Cars and water are simple shapes made in code.

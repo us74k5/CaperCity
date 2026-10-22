@@ -43,6 +43,7 @@ func _init() -> void:
 	gs._result(ana, "Car stolen", "Got it.", true)
 	_check("watching %s" % lot.name in str(gs.state.pending.text), "the result warns you off the scene")
 	gs.state.pending = {}
+	ana.walk_out = false
 	gs._leave(ana)
 	ana.steps = 10
 	gs._enter(ana, bank)
@@ -97,7 +98,7 @@ func _init() -> void:
 	var opt: String = gs.state.pending.options[1].id
 	_check(gs.handle(1, {"t": "pending", "id": opt}) == "", "set the ransom")
 	_check(gs.state.fight.is_empty() and gs.state.mini.is_empty(), "the fight screen is gone")
-	_check(gs.handle(1, {"t": "menu", "id": "leave"}) == "" and int(ana.inside) == -1, "and you can leave")
+	_check(int(ana.inside) == -1, "and after a crime you're back on the street")
 
 	# Easy Eddie: a reminder the month before, a short sentence, and news when you're back.
 	gs.state.pending = {}
@@ -186,6 +187,60 @@ func _init() -> void:
 	_check(moved <= 2, "no running faster than your legs (%d quick steps taken)" % moved)
 	gs.state.mini = {}
 	gs.state.pending = {}
+
+	# Into the depot, spotted: straight into the escape (no standoff), and if they catch you the fight
+	# replaces the finished minigame instead of hiding behind it.
+	ana.jail = 0
+	ana.immunity = 0
+	ana.steps = 20
+	ana.scenes = []
+	var depot := _building("bank")
+	for b2 in gs.state.city.buildings:
+		if b2.type == "harbor" or b2.type == "station":
+			depot = b2
+	ana.inside = int(depot.id)
+	gs._start_mini(ana, "sneak", "Into the depot", "Test.", 2, {"k": "crime", "key": "money_transport", "b": depot.id})
+	gs.state.mini.over = true
+	gs.state.mini.won = false
+	gs._end_mini(ana)
+	_check(gs.state.pending.get("kind", "") == "mini" and gs.state.mini.game == "escape", "spotted in the depot: run for it")
+	_check(int(gs.state.mini.foes[0].speed * 1000) == int(Chase.cop_speed(8) * 1000), "at an armored truck's severity")
+	gs.state.mini.over = true
+	gs.state.mini.won = false
+	gs._end_mini(ana)
+	_check(gs.state.pending.get("kind", "") == "fight" and gs.state.mini.is_empty(), "caught: the fight, with nothing left over it")
+	gs.state.pending = {}
+	gs.state.fight = {}
+
+	# A crime that works: one go, then back on the street; going back in is an arrest.
+	ana.jail = 0
+	ana.inside = int(bank.id)
+	ana.scenes = []
+	ana.steps = 20
+	gs._mark_scene(ana, bank)
+	gs._crime_success(ana, GameServer.CRIMES.bank_raid, bank, "")
+	_check(int(ana.inside) == int(bank.id) and gs.state.pending.kind == "result", "the result shows inside")
+	gs.handle(1, {"t": "pending", "id": "ok"})
+	_check(int(ana.inside) == -1, "then you're back out on the street")
+	# A crime that fails goes straight to the chase.
+	ana.inside = int(bank.id)
+	ana.scenes = []
+	gs._mark_scene(ana, bank)
+	gs._crime_failed(ana, "Hold up the teller went wrong.", 7)
+	_check(gs.state.pending.get("kind", "") == "mini" and gs.state.mini.game == "escape", "a failed hold-up is a chase")
+	gs.state.mini.over = true
+	gs.state.mini.won = true
+	gs._end_mini(ana)
+	gs.handle(1, {"t": "pending", "id": "ok"})
+	_check(int(ana.inside) == -1, "got away, and out on the street")
+	# Training isn't a crime: you stay inside.
+	var gym := _building("arms")
+	ana.inside = int(gym.id)
+	ana.cash = 5000
+	gs._exec(ana, PackedStringArray(["train", "0", "muscle"]))
+	gs.handle(1, {"t": "pending", "id": "ok"})
+	_check(int(ana.inside) == int(gym.id), "training keeps you in the gym")
+	gs._leave(ana)
 
 	print("jail: %s" % ("ok" if fails == 0 else "%d FAILED" % fails))
 	quit(1 if fails > 0 else 0)

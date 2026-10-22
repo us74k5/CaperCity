@@ -30,6 +30,10 @@ var _queue: Array = []
 var _last_cue := -1
 var _cache := {}
 var _tween: Tween
+## Set by the HUD: true while an outcome is still being played out on screen (a casino hand), so
+## its sting waits for the reveal instead of giving the result away.
+var hold_while: Callable
+var _held: Array = []
 
 
 func _ready() -> void:
@@ -154,13 +158,27 @@ func _on_state() -> void:
 		return
 	if n != _last_cue:
 		_last_cue = n
-		for c in cue.get("names", []):
-			if SFX_CUES.has(c):
-				Sfx.play(SFX_CUES[c])
-			elif STING_FILES.has(c):
-				_queue.append(STING_FILES[c])
-		if not _sting.playing:
-			_next_sting()
+		if hold_while.is_valid() and hold_while.call():
+			_held.append_array(cue.get("names", []))
+			return
+		_play_cues(cue.get("names", []))
+
+
+func _process(_delta: float) -> void:
+	if _held.size() > 0 and not (hold_while.is_valid() and hold_while.call()):
+		var names := _held.duplicate()
+		_held.clear()
+		_play_cues(names)
+
+
+func _play_cues(names: Array) -> void:
+	for c in names:
+		if SFX_CUES.has(c):
+			Sfx.play(SFX_CUES[c])
+		elif STING_FILES.has(c):
+			_queue.append(STING_FILES[c])
+	if not _sting.playing:
+		_next_sting()
 
 
 func _next_sting() -> void:

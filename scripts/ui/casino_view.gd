@@ -468,9 +468,25 @@ func _table(g: String) -> void:
 			p.position = Vector3(cos(a) * 0.55, 0.06, -sin(a) * 0.55)
 			p.rotation.y = a
 			_wheel.add_child(p)
-		var hub := _box(Vector3(0.18, 0.2, 0.18), Vector3.ZERO, C_GOLD)
-		hub.reparent(_wheel, false)
-		hub.position = Vector3(0, 0.12, 0)
+		# The turret in the middle: a gold cone with a cross handle.
+		var hub := MeshInstance3D.new()
+		var cone := CylinderMesh.new()
+		cone.top_radius = 0.03
+		cone.bottom_radius = 0.16
+		cone.height = 0.2
+		hub.mesh = cone
+		hub.material_override = _flat(C_GOLD)
+		hub.position = Vector3(0, 0.15, 0)
+		_wheel.add_child(hub)
+		for k in 2:
+			var bar := MeshInstance3D.new()
+			var bm := BoxMesh.new()
+			bm.size = Vector3(0.42, 0.03, 0.04)
+			bar.mesh = bm
+			bar.material_override = _flat(C_GOLD)
+			bar.position = Vector3(0, 0.24, 0)
+			bar.rotation.y = k * PI / 2
+			_wheel.add_child(bar)
 		_ball = MeshInstance3D.new()
 		var sph := SphereMesh.new()
 		sph.radius = 0.05
@@ -479,10 +495,23 @@ func _table(g: String) -> void:
 		_ball.material_override = _flat(Color.WHITE)
 		_ball.visible = false
 		add_child(_ball)
-		# The betting layout: 0, then 1-36 in three rows.
-		_box(Vector3(0.24, 0.02, 0.84), _layout_pos(0), _num_color(0))
+		# The betting layout, all on the felt: 0, then 1-36 in three rows of twelve on white lines,
+		# with the dozens underneath.
+		var x_end := LAYOUT_X0 + 11 * LAYOUT_DX + LAYOUT_DX / 2.0 + 0.02
+		var x_start := LAYOUT_X0 - LAYOUT_DX / 2.0 - 0.26
+		_box(Vector3(x_end - x_start, 0.012, 3 * LAYOUT_DZ + 0.03 + LAYOUT_DZ + 0.03),
+			t + Vector3((x_start + x_end) / 2.0, TOP + 0.025, LAYOUT_DZ / 2.0), Color("#F2EEE2"))
+		_box(Vector3(0.22, 0.02, 3 * LAYOUT_DZ - 0.02), _layout_pos(0), _num_color(0))
+		_cell_number(0, _layout_pos(0))
 		for n in range(1, 37):
-			_box(Vector3(0.21, 0.02, 0.26), _layout_pos(n), _num_color(n))
+			_box(Vector3(LAYOUT_DX - 0.015, 0.02, LAYOUT_DZ - 0.02), _layout_pos(n), _num_color(n))
+			_cell_number(n, _layout_pos(n))
+		for k in 3:
+			var at := t + Vector3(LAYOUT_X0 + (1.5 + 4 * k) * LAYOUT_DX, TOP + 0.04, 2 * LAYOUT_DZ)
+			_box(Vector3(4 * LAYOUT_DX - 0.015, 0.02, LAYOUT_DZ - 0.02), at, C_FELT.darkened(0.15))
+			var dz := _flat_text(["1st 12", "2nd 12", "3rd 12"][k], 40)
+			dz.position = at + Vector3(0, 0.015, 0)
+			add_child(dz)
 	else:
 		var felt := MeshInstance3D.new()
 		var c := CylinderMesh.new()
@@ -536,13 +565,38 @@ func _table(g: String) -> void:
 	_rings[g] = ring
 
 
+const LAYOUT_X0 := -0.05     # the first column of numbers, from the table's middle
+const LAYOUT_DX := 0.18      # column pitch: twelve columns end inside the felt
+const LAYOUT_DZ := 0.28      # row pitch
+
+
 func _layout_pos(n: int) -> Vector3:
 	var t: Vector3 = TABLE_POS.roulette
 	if n == 0:
-		return t + Vector3(-0.35, TOP + 0.04, 0)
+		return t + Vector3(LAYOUT_X0 - LAYOUT_DX / 2.0 - 0.13, TOP + 0.04, 0)
 	var col := (n - 1) / 3
 	var row := 2 - (n - 1) % 3
-	return t + Vector3(-0.1 + col * 0.23, TOP + 0.04, -0.3 + row * 0.3)
+	return t + Vector3(LAYOUT_X0 + col * LAYOUT_DX, TOP + 0.04, (row - 1) * LAYOUT_DZ)
+
+
+## A number printed flat on its square of the layout.
+func _cell_number(n: int, at: Vector3) -> void:
+	var l := _flat_text(str(n), 36)
+	l.position = at + Vector3(0, 0.015, 0)
+	add_child(l)
+
+
+func _flat_text(text: String, size: int) -> Label3D:
+	var l := Label3D.new()
+	l.text = text
+	l.font_size = size
+	l.pixel_size = 0.0028
+	l.modulate = Color("#F7F3E8")
+	l.outline_size = 6
+	l.outline_modulate = Color(0, 0, 0, 0.6)
+	l.rotation.x = -PI / 2
+	l.shaded = false
+	return l
 
 
 func _num_color(n: int) -> Color:

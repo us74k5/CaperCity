@@ -81,6 +81,13 @@ func _tick() -> bool:
 			if frame - at == 2 and hud._modal.visible:
 				print("FAIL: result card showed before the %s hand was played" % table)
 				return _finish(1)
+			var music: Node = root.get_node("Music")
+			if frame - at == 2 and not music._silent and music._held.is_empty():
+				print("FAIL: the %s win/lose sound didn't wait for the hand to play out" % table)
+				return _finish(1)
+			if hud._modal.visible and not music._held.is_empty():
+				print("FAIL: the %s win/lose sound is still held after the reveal" % table)
+				return _finish(1)
 			if frame - at == 60:
 				_shot(table + "_playing")
 			if hud._modal.visible:

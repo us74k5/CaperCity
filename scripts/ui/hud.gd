@@ -973,6 +973,7 @@ func _build_police_panel() -> void:
 
 func _refresh_police(pend: Dictionary, s: Dictionary) -> void:
 	for c in _police_box.get_children():
+		_police_box.remove_child(c)   # now, so the panel isn't sized with the old contents too
 		c.queue_free()
 	_police_panel.visible = pend.get("kind", "") == "police" and s.phase == "playing"
 	if not _police_panel.visible:

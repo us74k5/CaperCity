@@ -375,6 +375,7 @@ func show_game() -> void:
 	var hud: Control = preload("res://scripts/ui/hud.gd").new()
 	hud.set_anchors_preset(Control.PRESET_FULL_RECT)
 	hud.city_view = _city_view
+	Music.hold_while = func(): return is_instance_valid(_city_view) and _city_view.casino_busy()
 	hud.back_to_menu.connect(func():
 		Net.leave()
 		show_menu())

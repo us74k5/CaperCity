@@ -1,6 +1,6 @@
 extends SceneTree
-## The car dealer's lot (cars for sale up front, the ones to steal in the back) and the camera
-## walking in among them while you pick one to steal.
+## The car dealer's lot (cars for sale up front, the ones to steal in the back), the camera
+## walking in among them while you pick one to steal, and the same car models out on the map.
 ## Run: godot --path . --script res://tests/ui_lot_test.gd [-- --shots=DIR]  (headless works too)
 
 var main: Node
@@ -48,7 +48,26 @@ func _process(_d: float) -> bool:
 			var pv2: Node = main.get("_city_view").place_view
 			_check(pv2.lot.mode == "steal", "picking a car to steal walks in among them")
 			_shot("steal")
-		160:
+			# Out on the map in the Vortex 900, with the cops pulling up: the same models as the lot.
+			var p2: Dictionary = net.server._active()
+			p2.car = 2
+			p2.inside = -1
+			var roads: Array = net.server._road_cells_near_center()
+			p2.pos = [roads[roads.size() / 2].x, roads[roads.size() / 2].y] if roads[0] is Vector2i else roads[roads.size() / 2]
+			p2.menu_path = []
+			net.server._police_encounter(p2, "Police checkpoint! (test)", 3)
+			net._broadcast()
+			main.get("_city_view").zoom = 6.0
+		200:
+			var tk: Dictionary = main.get("_city_view")._tokens[int(net.active_player().id)]
+			_check(tk.car != null and int(tk.car_ci) == 2, "the token drives the car from the lot")
+			_shot("map_car")
+			net.server._active().car = 9
+			net._broadcast()
+		230:
+			_check(int(main.get("_city_view")._tokens[int(net.active_player().id)].car_ci) == 9, "a new car swaps the model")
+			_shot("map_car2")
+		240:
 			print("ui lot: ", "ok" if fails == 0 else "%d FAILED" % fails)
 			quit(1 if fails > 0 else 0)
 			return true

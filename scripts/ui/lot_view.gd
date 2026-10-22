@@ -4,7 +4,7 @@ extends Node3D
 ## man by the street. Cars for sale stand in the front row; the dealer's best cars, which you can
 ## only steal, stand in the back row. While you're picking one to steal the camera walks in among
 ## them and the salesman turns his back.
-## Cars are from Kenney's Car Kit (CC0), one model per car in Balance.CARS.
+## Cars are from Kenney's Car Kit (CC0), via CarModels.
 
 const CARS := "res://assets/models/cars/"
 const MODELS := "res://assets/models/"
@@ -13,19 +13,6 @@ const CAR_LEN := 3.1
 const STALL_W := 3.6
 const FRONT_Z := -1.0
 const BACK_Z := -7.6
-# Balance.CARS index -> [model, tint, length stretch]
-const LOOKS := {
-	1: ["hatchback-sports", Color.WHITE, 1.0],
-	2: ["sedan", Color.WHITE, 1.0],
-	3: ["sedan-sports", Color.WHITE, 1.0],
-	4: ["van", Color.WHITE, 1.0],
-	5: ["suv", Color.WHITE, 1.0],
-	6: ["suv-luxury", Color.WHITE, 1.0],
-	7: ["sedan", Color(0.32, 0.32, 0.36), 1.45],
-	8: ["sedan-sports", Color(0.45, 0.47, 0.55), 1.0],
-	9: ["race-future", Color.WHITE, 1.0],
-	10: ["race", Color.WHITE, 1.0],
-}
 const C_ASPHALT := Color("#3A3D42")
 const C_LINE := Color("#E9E6DC")
 const C_PENNANTS := [Color("#E0322A"), Color("#F2C230"), Color("#2F6BD8"), Color("#F4F4F4")]
@@ -172,27 +159,18 @@ func _row(cars: Array, z: float, steal: bool) -> void:
 		_tags.append({"label": tag, "steal": steal})
 
 
-## Car `ci` (see LOOKS) parked at `pos`, nose toward the street at turn 0.
+## Car `ci` (see CarModels) parked at `pos`, nose toward the street at turn 0.
 func _car(ci: int, pos: Vector3, turn: float) -> Node3D:
-	var look: Array = LOOKS.get(ci, LOOKS[2])
-	var node: Node3D = load(CARS + str(look[0]) + ".glb").instantiate()
-	var bb := _aabb(node)
-	var k: float = CAR_LEN / maxf(bb.size.z, 0.01)
-	var holder := Node3D.new()
+	var holder := CarModels.car(ci, CAR_LEN)
 	holder.position = pos
 	holder.rotation.y = turn
 	add_child(holder)
-	node.scale = Vector3(k, k, k * float(look[2]))
-	node.position = -Vector3(bb.get_center().x, bb.position.y, bb.get_center().z) * Vector3(k, k, k * float(look[2]))
-	holder.add_child(node)
-	if look[1] != Color.WHITE:
-		_tint(node, look[1])
 	return holder
 
 
 func _prop(model: String, pos: Vector3, size: float) -> void:
 	var node: Node3D = load(CARS + model + ".glb").instantiate()
-	var bb := _aabb(node)
+	var bb := CarModels.aabb(node)
 	var k := size / maxf(bb.size.y, 0.01)
 	node.scale = Vector3.ONE * k
 	node.position = pos - Vector3(bb.get_center().x, bb.position.y, bb.get_center().z) * k
@@ -266,37 +244,6 @@ func _extra(model: String, pos: Vector3, turn: float) -> Node3D:
 		ap.play("idle")
 		ap.seek(randf() * ap.current_animation_length)
 	return n
-
-
-## Bounds of a model's meshes, in its own space.
-func _aabb(node: Node3D) -> AABB:
-	var out := AABB()
-	var first := true
-	for m in node.find_children("*", "MeshInstance3D", true, false):
-		var mi: MeshInstance3D = m
-		var xf := Transform3D()
-		var n: Node = mi
-		while n != node and n is Node3D:
-			xf = (n as Node3D).transform * xf
-			n = n.get_parent()
-		var bb: AABB = xf * mi.get_aabb()
-		out = bb if first else out.merge(bb)
-		first = false
-	return out
-
-
-## Darkens a model's paint (and everything else) by `col`: the limo and the Stiletto are black.
-func _tint(node: Node3D, col: Color) -> void:
-	for m in node.find_children("*", "MeshInstance3D", true, false):
-		var mi: MeshInstance3D = m
-		for s in mi.mesh.get_surface_count():
-			var mat := mi.mesh.surface_get_material(s)
-			if mat is StandardMaterial3D:
-				var dup: StandardMaterial3D = mat.duplicate()
-				dup.albedo_color = dup.albedo_color * col
-				dup.metallic = 0.5
-				dup.roughness = 0.25
-				mi.set_surface_override_material(s, dup)
 
 
 func _money(n: int) -> String:
