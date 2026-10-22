@@ -48,8 +48,24 @@ func _process(_d: float) -> bool:
 			print("PROBLEM: no music for scene ", sname)
 			problems += 1
 	for c in cues:
+		if music.SFX_CUES.has(c):
+			if not ResourceLoader.exists("res://audio/weapons/%s.ogg" % music.SFX_CUES[c]):
+				print("PROBLEM: no sound effect for cue ", c)
+				problems += 1
+			continue
 		if not music.STING_FILES.has(c) or not ResourceLoader.exists("res://audio/sfx/%s.ogg" % music.STING_FILES[c]):
 			print("PROBLEM: no sting for cue ", c)
+			problems += 1
+	var fv_src := FileAccess.get_file_as_string("res://scripts/ui/fight_view.gd")
+	var wanted := ["pistol", "rifle", "machine_gun", "explosion", "grenade_pin", "grenade_bounce", "gun_cock", "knife_throw",
+		"knife_thunk", "knife_stab", "knife_slash", "swing_light", "swing_heavy", "punch_hit", "club_hit", "baton_hit",
+		"bullet_flesh", "bullet_miss", "body_fall"]
+	for w in wanted:
+		if not fv_src.contains("\"%s\"" % w):
+			print("PROBLEM: fight view no longer plays ", w)
+			problems += 1
+		if not ResourceLoader.exists("res://audio/weapons/%s.ogg" % w) and not ResourceLoader.exists("res://audio/weapons/%s_1.ogg" % w):
+			print("PROBLEM: no weapon sound ", w)
 			problems += 1
 	var never: Array = []
 	for f in DirAccess.get_files_at("res://audio/music"):

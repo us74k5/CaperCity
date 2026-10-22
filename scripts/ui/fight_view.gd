@@ -9,6 +9,15 @@ signal square_tapped(cell: Vector2i)
 const MODELS := "res://assets/models/"
 const STEP_TIME := 0.22
 const SHOT_TIME := 0.5
+# Gear indexes (Balance.GEAR) that get special handling.
+const CLUB := 1
+const BATON := 2
+const SWITCHBLADE := 3
+const THROWING_KNIFE := 4
+const GRENADE := 8
+# Where the right fist is in the "holding-right" pose, in the character's skeleton space
+# (+Z forward). Weapons are attached here and follow the arm bone from then on.
+const FIST := Vector3(-0.1, 0.27, 0.21)
 # Fighters' looks by role. Crew looks match their city tokens (see city_view.gd CREW_LOOKS).
 const ROLE_LOOKS := {"cop": "character-male-c", "guard": "character-male-d", "thug": "character-male-a",
 	"civilian": "character-female-d"}
@@ -24,28 +33,23 @@ var _timer := 0.0
 var _behind_since := -1         # msec since the shown fight has lagged the server's
 var _units := {}                # unit id -> {node, anim, label, pos: Vector2i, hp: int, max: int, name, side}
 var _marks: Node3D
-var _shot: MeshInstance3D
-var _shot_from := Vector3.ZERO
-var _shot_to := Vector3.ZERO
-var _shot_t := -1.0
+var _fx: Node3D               # flashes, shells, blood and scorch marks of the current fight
+var _shake := 0.0              # camera shake strength, read by city_view through shake_offset()
 
 
 func _ready() -> void:
 	_build_street()
 	_marks = Node3D.new()
 	add_child(_marks)
-	_shot = MeshInstance3D.new()
-	var sph := SphereMesh.new()
-	sph.radius = 0.06
-	sph.height = 0.12
-	_shot.mesh = sph
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color("#FFE27A")
-	mat.emission_enabled = true
-	mat.emission = Color("#FFC94A")
-	_shot.material_override = mat
-	_shot.visible = false
-	add_child(_shot)
+	_fx = Node3D.new()
+	add_child(_fx)
+
+
+## Added to the camera position while a grenade goes off.
+func shake_offset() -> Vector3:
+	if _shake <= 0.001:
+		return Vector3.ZERO
+	return Vector3(randf_range(-1, 1), randf_range(-0.5, 0.5), randf_range(-1, 1)) * _shake
 
 
 ## True while moves are still being replayed; the HUD holds input until they finish.
@@ -105,16 +109,14 @@ func clear() -> void:
 		u.node.queue_free()
 	_units.clear()
 	_queue.clear()
+	_shake = 0.0
+	for c in _fx.get_children():
+		c.queue_free()
 	_clear_marks()
 
 
 func _process(delta: float) -> void:
-	if _shot_t >= 0.0:
-		_shot_t += delta / SHOT_TIME * 1.6
-		_shot.position = _shot_from.lerp(_shot_to, minf(1.0, _shot_t))
-		if _shot_t >= 1.0:
-			_shot_t = -1.0
-			_shot.visible = false
+	_shake = maxf(0.0, _shake - delta * 0.9)
 	for u in _units.values():
 		var target := _world(u.pos)
 		u.node.position = u.node.position.lerp(target, minf(1.0, delta * 14.0))
@@ -161,7 +163,7 @@ func _start(f: Dictionary) -> void:
 		var pos := Vector2i(int(u.x), int(u.y))
 		node.position = _world(pos)
 		_units[int(u.id)] = {"node": node, "anim": ap, "label": lab, "pos": pos, "hp": int(u.hp), "max": int(u.max),
-			"name": str(u.name), "side": int(u.side), "gear": int(u.gear)}
+			"name": str(u.name), "side": int(u.side), "gear": int(u.gear), "weapon": _arm(node, ap, int(u.gear))}
 		_stance(_units[int(u.id)])
 		_relabel(_units[int(u.id)], false)
 
@@ -177,8 +179,8 @@ func _look(u: Dictionary) -> String:
 func _stance(u: Dictionary) -> void:
 	if int(u.hp) <= 0 or not is_instance_valid(u.node):
 		return
-	var ranged: bool = int(Balance.GEAR[int(u.gear)].reach) > 1
-	_play(u.anim, "holding-right" if ranged else "idle")
+	var g := int(u.gear)
+	_play(u.anim, "holding-right" if g > 0 else "idle")   # weapon out where you can see it
 
 
 func _relabel(u: Dictionary, current: bool) -> void:
@@ -222,40 +224,219 @@ func _play_event(ev: Dictionary) -> void:
 		"attack":
 			if u.is_empty():
 				return
-			var to2 := Vector2i(int(ev.to[0]), int(ev.to[1]))
-			var d2: Vector2i = to2 - u.pos
-			u.node.rotation.y = atan2(d2.x, d2.y)
-			var melee: bool = ev.get("melee", false)
-			_play(u.anim, "attack-melee-right" if melee else "holding-right-shoot", true)
-			if not melee:
-				_shot_from = _world(u.pos) + Vector3(0, 0.45, 0)
-				_shot_to = _world(to2) + Vector3(0, 0.45, 0)
-				_shot_t = 0.0
-				_shot.visible = true
-			_timer = SHOT_TIME
-			var t: Dictionary = _units.get(int(ev.get("t", -1)), {})
-			var dmg := int(ev.get("dmg", 0))
-			get_tree().create_timer(SHOT_TIME * 0.6).timeout.connect(func():
-				if not is_instance_valid(u.node):
-					return
-				if t.is_empty():
-					_float_text(_world(to2), "miss", Color("#B5B9C2"))
-					return
-				if dmg > 0:
-					t.hp = maxi(0, int(t.hp) - dmg)
-					_float_text(t.node.position, "-%d" % dmg, C_HIT)
-					if bool(ev.get("down", false)):
-						_play(t.anim, "die", true)
-						_float_text(t.node.position + Vector3(0, 0.3, 0), "DOWN", Color("#F2C230"))
-					_relabel(t, false)
-				else:
-					_float_text(t.node.position, "miss", Color("#B5B9C2")))
-			get_tree().create_timer(SHOT_TIME).timeout.connect(func(): _stance(u))
+			_attack(u, ev)
 		"wait":
 			_timer = 0.12
 		"backup":
 			_float_text(center() - global_position, "BACKUP ARRIVES", Color("#FF9C90"))
 			_timer = 0.8
+
+
+# ------------------------------------------------------------------ weapons
+
+## Put the fighter's weapon in their right hand. The grip goes where the fist is in the
+## "holding-right" pose and then rides the arm bone through every animation.
+func _arm(node: Node3D, ap: AnimationPlayer, g: int) -> Node3D:
+	var w := WeaponModels.build(g)
+	if w == null:
+		return null
+	var found := node.find_children("*", "Skeleton3D", true, false)
+	if found.is_empty():
+		w.queue_free()
+		return null
+	var sk: Skeleton3D = found[0]
+	var bi := sk.find_bone("arm-right")
+	if bi < 0:
+		w.queue_free()
+		return null
+	ap.play("holding-right")
+	ap.advance(0.0)
+	var pose := sk.get_bone_global_pose(bi)
+	var ba := BoneAttachment3D.new()
+	ba.bone_name = "arm-right"
+	sk.add_child(ba)
+	ba.add_child(w)
+	w.transform = pose.affine_inverse() * Transform3D(Basis(), FIST)
+	return w
+
+
+## Play out one attack with the attacker's weapon: the animation, flash, tracer, shell, thrown
+## knife or grenade, the sound, and then the hit (or miss) on the target.
+func _attack(u: Dictionary, ev: Dictionary) -> void:
+	var to2 := Vector2i(int(ev.to[0]), int(ev.to[1]))
+	var d2: Vector2i = to2 - u.pos
+	u.node.rotation.y = atan2(d2.x, d2.y)
+	var g := int(u.gear)
+	var t: Dictionary = _units.get(int(ev.get("t", -1)), {})
+	var dmg := int(ev.get("dmg", 0))
+	var hit: bool = not t.is_empty() and dmg > 0
+	var chest := _world(u.pos) + Vector3(0, 0.38, 0)
+	var aim := _world(to2) + Vector3(0, 0.34, 0)
+	if not hit:   # a miss goes wide and ends on the street beside the target
+		var side := Vector3(-(aim - chest).z, 0, (aim - chest).x).normalized()
+		aim = _world(to2) + side * randf_range(0.3, 0.5) * (1.0 if randf() < 0.5 else -1.0) + Vector3(0, 0.02, 0)
+	var dir := (aim - chest).normalized()
+	var land := 0.28
+	var total := SHOT_TIME
+	if WeaponModels.is_gun(g):
+		_play(u.anim, "holding-right-shoot", true)
+		var rounds := 6 if g == 7 else 1
+		var gap := 0.085
+		var size: float = [1.0, 1.5, 1.15][g - 5]
+		Sfx.play(["pistol", "rifle", "machine_gun"][g - 5], 0.0, 0.05, 0.08)
+		for i in rounds:
+			var spray := Vector3.ZERO if i == 0 else Vector3(randf_range(-0.12, 0.12), randf_range(-0.05, 0.05), randf_range(-0.12, 0.12))
+			get_tree().create_timer(0.08 + gap * i).timeout.connect(_fire_round.bind(u, g, aim + spray, size, hit and i < 3 + int(dmg > 6)))
+		var fly := chest.distance_to(aim) / 45.0
+		land = 0.08 + gap * (rounds - 1) + fly
+		total = maxf(SHOT_TIME, land + 0.25)
+		if g == 6:
+			Sfx.play("gun_cock", -6.0, 0.03, 0.55)   # work the bolt
+			total = maxf(total, 0.8)
+	elif g == THROWING_KNIFE:
+		_play(u.anim, "attack-melee-right", true)
+		Sfx.play("knife_throw", 0.0, 0.06, 0.12)
+		var flight := clampf(chest.distance_to(aim) / 9.0, 0.12, 0.45)
+		get_tree().create_timer(0.16).timeout.connect(_throw_knife.bind(u, aim, flight, hit))
+		land = 0.16 + flight
+		total = land + 0.25
+	elif g == GRENADE:
+		Sfx.play("grenade_pin", 0.0, 0.03)
+		get_tree().create_timer(0.22).timeout.connect(func(): _play(u.anim, "attack-melee-right", true))
+		var ground := Vector3(aim.x, 0.04, aim.z) if hit else Vector3(_world(to2).x, 0.04, _world(to2).z) + (aim - _world(to2)) * 0.4
+		get_tree().create_timer(0.38).timeout.connect(_lob_grenade.bind(u, ground))
+		land = 0.38 + 0.55 + 0.35
+		get_tree().create_timer(land).timeout.connect(func():
+			Sfx.play("explosion", 2.0, 0.04)
+			WeaponFx.explosion(_fx, ground, 1.0)
+			_shake = 0.22)
+		total = land + 0.6
+	else:
+		_play(u.anim, "attack-melee-right", true)
+		Sfx.play("swing_heavy" if g in [CLUB, BATON] else "swing_light", -2.0, 0.08, 0.04)
+		get_tree().create_timer(0.1).timeout.connect(func():
+			if is_instance_valid(u.node):
+				WeaponFx.swing_trail(_fx, chest, dir, 0.5 if g in [CLUB, BATON] else 0.38,
+					Color(0.85, 0.9, 1.0, 0.5) if g == SWITCHBLADE else Color(1, 1, 1, 0.4)))
+		land = 0.26
+	_timer = total
+	get_tree().create_timer(land).timeout.connect(_land.bind(u, t, ev, to2, dmg, g, dir, aim))
+	get_tree().create_timer(total).timeout.connect(func(): _stance(u))
+
+
+func _fire_round(u: Dictionary, g: int, aim: Vector3, size: float, bloody: bool) -> void:
+	if not is_instance_valid(u.node):
+		return
+	var muzzle := _muzzle(u)
+	var dir := (aim - muzzle).normalized()
+	WeaponFx.muzzle_flash(_fx, muzzle, dir, size)
+	WeaponFx.eject_shell(_fx, muzzle - dir * 0.12, dir, g != 5)
+	var fly := WeaponFx.tracer(_fx, muzzle, aim)
+	get_tree().create_timer(fly).timeout.connect(func():
+		if bloody:
+			WeaponFx.blood(_fx, aim, dir, 0.6 if g == 7 else 1.0)
+		else:
+			var spot := Vector3(aim.x, 0.02, aim.z) if aim.y > 0.1 else aim
+			WeaponFx.ricochet(_fx, spot, dir))
+
+
+func _muzzle(u: Dictionary) -> Vector3:
+	var w: Node3D = u.get("weapon")
+	if w != null and is_instance_valid(w) and w.is_inside_tree():
+		return to_local(w.global_transform * WeaponModels.muzzle(int(u.gear)))
+	return u.node.position + Vector3(0, 0.36, 0) + Vector3(sin(u.node.rotation.y), 0, cos(u.node.rotation.y)) * 0.3
+
+
+func _throw_knife(u: Dictionary, aim: Vector3, flight: float, hit: bool) -> void:
+	if not is_instance_valid(u.node):
+		return
+	var k := WeaponModels.build(THROWING_KNIFE)
+	_fx.add_child(k)
+	var from := _muzzle(u)
+	k.position = from
+	var dir := (aim - from).normalized()
+	k.rotation.y = atan2(dir.x, dir.z)
+	var stick := aim if hit else Vector3(aim.x, 0.05, aim.z)
+	var tw := k.create_tween()
+	tw.tween_method(func(f: float):
+		k.position = from.lerp(stick, f) + Vector3(0, sin(f * PI) * 0.12, 0)
+		k.rotation.x = f * TAU * 3.0, 0.0, 1.0, flight)
+	if hit:
+		tw.tween_callback(k.queue_free)
+	else:
+		tw.tween_callback(func(): k.rotation.x = deg_to_rad(110))   # stuck in the street
+		tw.tween_interval(4.0)
+		tw.tween_property(k, "scale", Vector3.ZERO, 0.3)
+		tw.tween_callback(k.queue_free)
+
+
+func _lob_grenade(u: Dictionary, ground: Vector3) -> void:
+	if not is_instance_valid(u.node):
+		return
+	var held: Node3D = u.get("weapon")
+	if held != null and is_instance_valid(held):
+		held.visible = false
+		get_tree().create_timer(1.4).timeout.connect(func():
+			if is_instance_valid(held):
+				held.visible = true)
+	var gr := WeaponModels.build(GRENADE)
+	_fx.add_child(gr)
+	var from := _muzzle(u)
+	gr.position = from
+	var peak := from.lerp(ground, 0.5) + Vector3(0, 1.0 + from.distance_to(ground) * 0.12, 0)
+	var roll := ground + (ground - from).normalized() * 0.18
+	roll.y = ground.y
+	var tw := gr.create_tween()
+	tw.tween_method(func(f: float):
+		gr.position = from.lerp(peak, f).lerp(peak.lerp(ground, f), f)
+		gr.rotation = Vector3(f * 9.0, f * 3.0, 0), 0.0, 1.0, 0.55)
+	tw.tween_callback(func(): Sfx.play("grenade_bounce", -2.0, 0.05))
+	tw.tween_property(gr, "position", ground.lerp(roll, 0.6) + Vector3(0, 0.08, 0), 0.12)
+	tw.tween_property(gr, "position", roll, 0.12)
+	tw.tween_interval(0.11)
+	tw.tween_callback(gr.queue_free)
+
+
+## The blow or bullet arrives: numbers, blood, sound, and down he goes.
+func _land(u: Dictionary, t: Dictionary, ev: Dictionary, to2: Vector2i, dmg: int, g: int, dir: Vector3, aim: Vector3) -> void:
+	if not is_instance_valid(u.node):
+		return
+	var gun: bool = WeaponModels.is_gun(g)
+	if t.is_empty() or dmg <= 0:
+		_float_text(_world(to2) if t.is_empty() else t.node.position, "miss", Color("#B5B9C2"))
+		if gun:
+			Sfx.play("bullet_miss", -4.0, 0.1)
+		elif g == THROWING_KNIFE:
+			Sfx.play("knife_thunk", -3.0, 0.08)
+		return
+	t.hp = maxi(0, int(t.hp) - dmg)
+	_float_text(t.node.position, "-%d" % dmg, C_HIT)
+	var body: Vector3 = t.node.position + Vector3(0, 0.34, 0)
+	match g:
+		0:
+			Sfx.play("punch_hit", 0.0, 0.08)
+			WeaponFx.impact(_fx, body, dir)
+		CLUB, BATON:
+			Sfx.play("club_hit" if g == CLUB else "baton_hit", 0.0, 0.07)
+			WeaponFx.impact(_fx, body, dir)
+			if dmg >= 3:
+				WeaponFx.blood(_fx, body, dir, 0.5)
+		SWITCHBLADE:
+			Sfx.play("knife_stab" if randf() < 0.5 else "knife_slash", 0.0, 0.07)
+			WeaponFx.blood(_fx, body, dir, 0.8)
+		THROWING_KNIFE:
+			Sfx.play("knife_thunk", 0.0, 0.07)
+			Sfx.play("knife_stab", -6.0, 0.07)
+			WeaponFx.blood(_fx, body, dir, 0.7)
+		GRENADE:
+			WeaponFx.blood(_fx, body, dir, 1.4)
+		_:
+			Sfx.play("bullet_flesh", -1.0, 0.08)
+	if bool(ev.get("down", false)):
+		_play(t.anim, "die", true)
+		Sfx.play("body_fall", -2.0, 0.06, 0.45)
+		_float_text(t.node.position + Vector3(0, 0.3, 0), "DOWN", Color("#F2C230"))
+	_relabel(t, false)
 
 
 func _float_text(at: Vector3, text: String, col: Color) -> void:

@@ -264,6 +264,8 @@ func _process(delta: float) -> void:
 	var back := Vector3(0, sin(PITCH), cos(PITCH)) * dist
 	camera.position = _cam_target + back
 	camera.look_at(_cam_target, Vector3.UP)
+	if in_fight():
+		camera.position += fight_view.shake_offset()
 
 
 func _token_target(p: Dictionary) -> Vector3:

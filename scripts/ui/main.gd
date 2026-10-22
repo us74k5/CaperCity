@@ -213,6 +213,9 @@ func show_menu() -> void:
 	var music_b := UiTheme.button("Music: On" if Music.is_on() else "Music: Off", false, 44)
 	music_b.pressed.connect(func(): music_b.text = "Music: On" if Music.toggle() else "Music: Off")
 	v.add_child(music_b)
+	var sfx_b := UiTheme.button("Sound effects: On" if Sfx.is_on() else "Sound effects: Off", false, 44)
+	sfx_b.pressed.connect(func(): sfx_b.text = "Sound effects: On" if Sfx.toggle() else "Sound effects: Off")
+	v.add_child(sfx_b)
 	var note := UiTheme.label("Friends on the same Wi-Fi join with your address. Port %d. Press M in game to toggle music." % Net.DEFAULT_PORT, 14, UiTheme.MUTED)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(note)
@@ -246,6 +249,9 @@ func _web_menu(v: VBoxContainer, name_in: LineEdit, crew_in: LineEdit, url: Stri
 	var music_b := UiTheme.button("Music: On" if Music.is_enabled() else "Music: Off", false, 44)
 	music_b.pressed.connect(func(): music_b.text = "Music: On" if Music.toggle() else "Music: Off")
 	v.add_child(music_b)
+	var sfx_b := UiTheme.button("Sound effects: On" if Sfx.is_on() else "Sound effects: Off", false, 44)
+	sfx_b.pressed.connect(func(): sfx_b.text = "Sound effects: On" if Sfx.toggle() else "Sound effects: Off")
+	v.add_child(sfx_b)
 	var note := UiTheme.label("Everyone who opens this page joins the same town. The first player in starts the game; anyone who comes later joins it with a new crew. Press M in game to toggle music.", 14, UiTheme.MUTED)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(note)

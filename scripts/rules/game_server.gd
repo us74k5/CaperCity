@@ -1440,6 +1440,7 @@ func _exec(p: Dictionary, a: PackedStringArray) -> void:
 			var mem: Dictionary = p.crew[int(a[2])]
 			p.cash = int(p.cash) - int(Balance.GEAR[gi].price)
 			mem.gear = gi
+			_cue("arm_up")
 			_result(p, "Armed up", "%s now carries a %s." % [mem.name, Balance.GEAR[gi].name], true)
 		"practice":
 			p.cash = int(p.cash) - 150

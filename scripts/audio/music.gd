@@ -11,6 +11,8 @@ const SETTINGS_PATH := "user://settings.cfg"
 const FADE := 1.2
 const MUSIC_DB := -9.0
 const DUCK_DB := -18.0
+# Cues that are sound effects rather than music stings (they follow the sound effects switch).
+const SFX_CUES := {"arm_up": "gun_cock"}
 const STING_FILES := {
 	"shootout": "shootout", "gang_war": "gang_war", "success": "success", "fail": "gamble_lose",
 	"jail_door": "jail_door", "rank_up": "rank_up", "kidnap": "kidnap", "cash": "cash",
@@ -153,7 +155,9 @@ func _on_state() -> void:
 	if n != _last_cue:
 		_last_cue = n
 		for c in cue.get("names", []):
-			if STING_FILES.has(c):
+			if SFX_CUES.has(c):
+				Sfx.play(SFX_CUES[c])
+			elif STING_FILES.has(c):
 				_queue.append(STING_FILES[c])
 		if not _sting.playing:
 			_next_sting()
