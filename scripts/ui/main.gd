@@ -243,7 +243,10 @@ func show_menu() -> void:
 func _web_menu(v: VBoxContainer, name_in: LineEdit, crew_in: LineEdit, url: String) -> void:
 	var play_b := UiTheme.button("Play", true, 56)
 	v.add_child(play_b)
-	var note := UiTheme.label("Everyone who opens this page joins the same town. The first player in starts the game; anyone who comes later joins it with a new crew.", 14, UiTheme.MUTED)
+	var music_b := UiTheme.button("Music: On" if Music.is_enabled() else "Music: Off", false, 44)
+	music_b.pressed.connect(func(): music_b.text = "Music: On" if Music.toggle() else "Music: Off")
+	v.add_child(music_b)
+	var note := UiTheme.label("Everyone who opens this page joins the same town. The first player in starts the game; anyone who comes later joins it with a new crew. Press M in game to toggle music.", 14, UiTheme.MUTED)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(note)
 	play_b.pressed.connect(func():
