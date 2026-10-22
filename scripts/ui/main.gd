@@ -210,7 +210,10 @@ func show_menu() -> void:
 	v.add_child(row)
 	var solo_b := UiTheme.button("Solo test (you + a local rival)", false, 48)
 	v.add_child(solo_b)
-	var note := UiTheme.label("Friends on the same Wi-Fi join with your address. Port %d." % Net.DEFAULT_PORT, 14, UiTheme.MUTED)
+	var music_b := UiTheme.button("Music: On" if Music.playing else "Music: Off", false, 44)
+	music_b.pressed.connect(func(): music_b.text = "Music: On" if Music.toggle() else "Music: Off")
+	v.add_child(music_b)
+	var note := UiTheme.label("Friends on the same Wi-Fi join with your address. Port %d. Press M in game to toggle music." % Net.DEFAULT_PORT, 14, UiTheme.MUTED)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(note)
 

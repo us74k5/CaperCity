@@ -14,6 +14,7 @@ config/icon="res://icon.svg"
 [autoload]
 
 Net="*res://scripts/net/net.gd"
+Music="*res://scripts/audio/music.gd"
 
 [display]
 

@@ -854,6 +854,9 @@ func _route_steps(start: Vector2i, route: Array) -> int:
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event.pressed:
 		return
+	if event is InputEventKey and event.keycode == KEY_M:
+		Music.toggle()
+		return
 	var map := {KEY_UP: "N", KEY_DOWN: "S", KEY_LEFT: "W", KEY_RIGHT: "E", KEY_W: "N", KEY_S: "S", KEY_A: "W", KEY_D: "E"}
 	var chasing: bool = Net.state.get("pending", {}).get("kind", "") == "mini"
 	var game: String = Net.state.get("mini", {}).get("game", "")
