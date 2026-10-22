@@ -2,14 +2,16 @@ extends Node
 ## Screen manager: main menu → lobby → game. Everything is built in code.
 
 const SETTINGS_PATH := "user://settings.cfg"
+const COMPACT_SHORT_SIDE := 480.0   # phones: the UI is laid out as if the short side were this many px
 
 var _layer: CanvasLayer
 var _screen: Control
-var _city_view: Node2D
+var _city_view: Node3D
 var _hud: Control
 var _toast: Label
 var _toast_timer := 0.0
 var _current := ""
+var _rotate: Control
 
 
 func _ready() -> void:
@@ -24,6 +26,11 @@ func _ready() -> void:
 	_toast.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
 	_toast.position.y -= 90
 	_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UiTheme.compact = UiTheme.detect_compact()
+	if UiTheme.compact:
+		_build_rotate_hint()
+		get_viewport().size_changed.connect(_fit_ui)
+		_fit_ui()
 	Net.state_updated.connect(_on_state)
 	Net.error_message.connect(toast)
 	Net.connection_lost.connect(func(reason: String):
@@ -38,6 +45,52 @@ func _process(delta: float) -> void:
 		_toast_timer -= delta
 		if _toast_timer <= 0:
 			_toast.visible = false
+
+
+## Scale the UI so a phone screen gets readable text and thumb-sized buttons.
+func _fit_ui() -> void:
+	var win := get_window()
+	var w := float(win.size.x)
+	var h := float(win.size.y)
+	if w <= 0 or h <= 0:
+		return
+	var base := minf(w / 1280.0, h / 720.0)    # what canvas_items/expand stretch would give
+	win.content_scale_factor = maxf(1.0, (minf(w, h) / COMPACT_SHORT_SIDE) / base)
+	_update_rotate_hint()
+
+
+## The game screen needs landscape on a phone; portrait gets a full-screen hint instead.
+func _build_rotate_hint() -> void:
+	var r := ColorRect.new()
+	r.color = UiTheme.BG
+	r.set_anchors_preset(Control.PRESET_FULL_RECT)
+	r.mouse_filter = Control.MOUSE_FILTER_STOP
+	var c := CenterContainer.new()
+	c.set_anchors_preset(Control.PRESET_FULL_RECT)
+	r.add_child(c)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	c.add_child(v)
+	var icon := UiTheme.label("⟳", 64, UiTheme.CORAL)
+	icon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(icon)
+	var l := UiTheme.label("Turn your phone sideways", 24)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(l)
+	var m := UiTheme.label("Caper City plays in landscape.", 16, UiTheme.MUTED)
+	m.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(m)
+	r.visible = false
+	_rotate = r
+	_layer.add_child(r)
+
+
+func _update_rotate_hint() -> void:
+	if _rotate == null:
+		return
+	var vs := get_viewport().get_visible_rect().size
+	_rotate.visible = _current == "game" and vs.y > vs.x
+	_layer.move_child(_rotate, -1)
 
 
 func toast(text: String) -> void:
@@ -60,6 +113,7 @@ func _set_screen(c: Control, name_: String) -> void:
 		_layer.remove_child(_toast)
 	_layer.add_child(_toast)
 	_toast.theme = c.theme
+	_update_rotate_hint()
 
 
 func _on_state() -> void:
@@ -68,6 +122,9 @@ func _on_state() -> void:
 		return
 	if s.phase == "lobby":
 		if _current != "lobby":
+			if _city_view:   # the game was ended: back to the lobby
+				_city_view.queue_free()
+				_city_view = null
 			show_lobby()
 		else:
 			_refresh_lobby()
@@ -105,15 +162,16 @@ func show_menu() -> void:
 	center.set_anchors_preset(Control.PRESET_FULL_RECT)
 	root.add_child(center)
 	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 12)
+	v.add_theme_constant_override("separation", 8 if UiTheme.compact else 12)
 	v.custom_minimum_size = Vector2(440, 0)
 	center.add_child(v)
 
 	v.add_child(UiTheme.label("RIVAL CREWS · ONE TOWN · LIVE", 15, UiTheme.TEAL))
 	var logo := VBoxContainer.new()
-	logo.add_theme_constant_override("separation", -34)
-	logo.add_child(UiTheme.label("CAPER", 76, UiTheme.CORAL))
-	logo.add_child(UiTheme.label("CITY", 76, UiTheme.TEXT))
+	var logo_size := 48 if UiTheme.compact else 76   # a landscape phone is short
+	logo.add_theme_constant_override("separation", -logo_size * 9 / 20)
+	logo.add_child(UiTheme.label("CAPER", logo_size, UiTheme.CORAL))
+	logo.add_child(UiTheme.label("CITY", logo_size, UiTheme.TEXT))
 	v.add_child(logo)
 	v.add_child(UiTheme.label("Pull the job. Dodge the cops. Run the town.", 18, UiTheme.MUTED))
 
@@ -132,6 +190,12 @@ func show_menu() -> void:
 	for le in [name_in, crew_in]:
 		le.custom_minimum_size = Vector2(0, 48)
 		v.add_child(le)
+
+	var web_url := Net.web_server_url()
+	if web_url != "":
+		_web_menu(v, name_in, crew_in, web_url)
+		_set_screen(root, "menu")
+		return
 
 	var host_b := UiTheme.button("Host a game", true, 56)
 	v.add_child(host_b)
@@ -172,6 +236,19 @@ func show_menu() -> void:
 	_set_screen(root, "menu")
 
 
+## In a browser there's one server: the one that served the page. No hosting, just Play.
+func _web_menu(v: VBoxContainer, name_in: LineEdit, crew_in: LineEdit, url: String) -> void:
+	var play_b := UiTheme.button("Play", true, 56)
+	v.add_child(play_b)
+	var note := UiTheme.label("Everyone who opens this page joins the same town. The first player in starts the game; anyone who comes later joins it with a new crew.", 14, UiTheme.MUTED)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	v.add_child(note)
+	play_b.pressed.connect(func():
+		_save_settings(name_in.text, crew_in.text, "")
+		var err := Net.join(url, Net.DEFAULT_PORT, _or(name_in.text, "Player"), crew_in.text)
+		toast(err if err != "" else "Connecting…"))
+
+
 func _or(s: String, fallback: String) -> String:
 	return fallback if s.strip_edges() == "" else s
 
@@ -188,16 +265,26 @@ func show_lobby() -> void:
 	var root := ColorRect.new()
 	root.color = UiTheme.BG
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var scroll := ScrollContainer.new()
+	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	root.add_child(scroll)
 	var center := CenterContainer.new()
-	center.set_anchors_preset(Control.PRESET_FULL_RECT)
-	root.add_child(center)
+	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.add_child(center)
+	var cols := HBoxContainer.new()
+	cols.add_theme_constant_override("separation", 16 if UiTheme.compact else 28)
+	center.add_child(cols)
+	# Left: make your boss. Right: who's here, and starting.
+	cols.add_child(preload("res://scripts/ui/creator.gd").new())
 	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 12)
-	v.custom_minimum_size = Vector2(520, 0)
-	center.add_child(v)
+	v.add_theme_constant_override("separation", 8 if UiTheme.compact else 12)
+	v.custom_minimum_size = Vector2(260 if UiTheme.compact else 380, 0)
+	cols.add_child(v)
 	v.add_child(UiTheme.label("LOBBY", 15, UiTheme.TEAL))
-	v.add_child(UiTheme.label("Waiting for crews", 40))
-	if Net.is_host():
+	v.add_child(UiTheme.label("Waiting for crews", 26 if UiTheme.compact else 36))
+	if Net.is_host() and not OS.has_feature("web"):
 		var ips: Array = []
 		for ip in IP.get_local_addresses():
 			if ip.count(".") == 3 and not ip.begins_with("127.") and not ip.begins_with("169.254."):
@@ -211,24 +298,21 @@ func show_lobby() -> void:
 	panel.add_child(_lobby_list)
 	v.add_child(panel)
 
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 8)
-	v.add_child(row)
-	row.add_child(UiTheme.label("Game length", 16, UiTheme.MUTED))
+	v.add_child(UiTheme.label("Game length", 15, UiTheme.MUTED))
 	_lobby_target = OptionButton.new()
 	_lobby_target.add_item("Quick (20 points)", 20)
 	_lobby_target.add_item("Standard (35 points)", 35)
 	_lobby_target.add_item("Long (50 points)", 50)
 	_lobby_target.select(1)
 	_lobby_target.custom_minimum_size = Vector2(240, 44)
-	row.add_child(_lobby_target)
+	v.add_child(_lobby_target)
 
 	_lobby_local = UiTheme.button("Add a player on this device", false, 44)
 	_lobby_local.pressed.connect(func():
 		var n: int = Net.state.players.size() + 1
 		Net.send_intent({"t": "add_local", "name": "Player %d" % n, "crew": ""}))
 	v.add_child(_lobby_local)
-	_lobby_start = UiTheme.button("Start the game", true, 56)
+	_lobby_start = UiTheme.button("Start the game", true, 52)
 	_lobby_start.pressed.connect(func():
 		Net.send_intent({"t": "start", "target": _lobby_target.get_selected_id()}))
 	v.add_child(_lobby_start)
@@ -246,12 +330,23 @@ func _refresh_lobby() -> void:
 		return
 	for c in _lobby_list.get_children():
 		c.queue_free()
+	var waiting := 0
 	for pid in Net.state.players:
 		var p: Dictionary = Net.state.players[pid]
-		var l := UiTheme.label("•  %s  —  %s%s" % [p.name, p.crew_name, "  (this device)" if int(p.owner) == Net.my_peer else ""], 18, Color(p.color))
+		var who := ""
+		for a in Balance.AVATARS:
+			if a.id == p.avatar:
+				who = " as %s" % a.name
+		var status := "✓" if p.ready else "…"
+		if not p.ready:
+			waiting += 1
+		var l := UiTheme.label("%s  %s%s%s" % [status, p.name, who, "  (you)" if int(p.owner) == Net.my_peer and not p.local else ""], 17, Color(p.color))
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		_lobby_list.add_child(l)
 	var host := Net.am_room_host()
 	_lobby_start.visible = host
+	_lobby_start.text = "Start the game" if waiting == 0 else "Start (%d still creating)" % waiting
+	_lobby_start.tooltip_text = "" if waiting == 0 else "Anything they haven't picked or rolled is picked for them."
 	_lobby_target.disabled = not host
 	_lobby_local.visible = host
 	if not host:

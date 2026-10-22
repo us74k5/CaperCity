@@ -60,7 +60,9 @@ func _process(_d: float) -> bool:
 				net.send_intent({"t": "menu", "id": en[randi() % en.size()].id})
 			else:
 				_go_toward_building(a, s)
-	elif frame >= 900:
+	elif frame == 900:
+		_leave_via_menu()
+	elif frame >= 906:
 		return _finish()
 	return false
 
@@ -101,9 +103,22 @@ func _shot(tag: String) -> void:
 		img.save_png("%s/%02d_%s.png" % [shots_dir, shot_n, tag])
 
 
+## The in-game Leave button: confirm, and you're back on the title screen.
+func _leave_via_menu() -> void:
+	var hud: Node = main.get("_hud")
+	hud._leave_btn.emit_signal("pressed")
+	for c in hud._overlay_box.get_children():
+		if c is Button and c.text == "Leave game":
+			c.emit_signal("pressed")
+			return
+	print("FAIL: no Leave game button in the leave overlay")
+
+
 func _finish() -> bool:
 	var s: Dictionary = net.state
-	print("ui smoke: frames=%d phase=%s month=%s log_lines=%d" % [frame, s.phase, s.month, s.log.size()])
+	print("ui smoke: frames=%d phase=%s month=%s log_lines=%d" % [frame, s.get("phase", "-"), s.get("month", "-"), s.get("log", []).size()])
+	if frame >= 900:
+		print("leave: %s" % ("back on the title screen" if main.get("_current") == "menu" else "FAIL: still on %s" % main.get("_current")))
 	_shot("end")
 	quit(0)
 	return true

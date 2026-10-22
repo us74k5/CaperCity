@@ -11,6 +11,8 @@ func _init() -> void:
 	var total_months := 0
 	var max_bytes := 0
 	var crimes_seen := {}
+	var fights_moves := 0
+	var minis := {}
 	for gi in games:
 		var g := GameServer.new(1000 + gi)
 		_ok(g.handle(1, {"t": "join", "name": "Ana", "crew": "Ana's Crew"}), "join")
@@ -26,7 +28,38 @@ func _init() -> void:
 			var p: Dictionary = s.players[s.order[s.active]]
 			var intent := {}
 			var must_succeed := false
-			if not s.pending.is_empty():
+			if s.pending.get("kind", "") == "mini" and rng.randf() < 0.97:
+				# Play at random and let the server's clock run, as Net does every frame.
+				var mg: Dictionary = s.mini
+				if int(mg.tick) == 0:
+					minis[mg.game] = int(minis.get(mg.game, 0)) + 1
+				if mg.game == "safe":
+					intent = {"t": "mini", "turn": [1, -1][rng.randi() % 2]} if rng.randf() < 0.8 else {"t": "mini", "pick": rng.randi() % 3}
+				else:
+					intent = {"t": "mini", "dir": ["N", "S", "E", "W", ""][rng.randi() % 5]}
+				var e1: String = g.handle(1, intent)
+				if e1 != "" and e1 != "It's over.":
+					_fail("game %d: minigame input %s failed: %s" % [gi, intent, e1])
+				for i in rng.randi_range(1, 12):
+					if g.tick(Mini.TICK) == 2:
+						break
+				_check(g, gi)
+				continue
+			elif s.pending.get("kind", "") == "fight" and rng.randf() < 0.8:
+				# Play the fight by hand: mostly legal moves and attacks, sometimes a wait or a random square.
+				var fo := Fight.options(s.fight)
+				var cells: Array = fo.attack + fo.move
+				var r0 := rng.randf()
+				if r0 < 0.05:
+					intent = {"t": "fight"}
+				elif r0 < 0.1 or cells.is_empty():
+					intent = {"t": "fight", "cell": [rng.randi() % Fight.W, rng.randi() % Fight.H]}
+				else:
+					var c: Vector2i = fo.attack[0] if fo.attack.size() > 0 and rng.randf() < 0.7 else cells[rng.randi() % cells.size()]
+					intent = {"t": "fight", "cell": [c.x, c.y]}
+					must_succeed = true
+				fights_moves += 1
+			elif not s.pending.is_empty():
 				var opts: Array = s.pending.options.filter(func(o): return o.get("enabled", true))
 				intent = {"t": "pending", "id": opts[rng.randi() % opts.size()].id}
 				must_succeed = true
@@ -61,12 +94,42 @@ func _init() -> void:
 		total_months += int(g.state.month)
 		max_bytes = maxi(max_bytes, var_to_bytes(g.state).size())
 	print("games finished: %d / %d, avg months: %.1f, largest state: %d bytes" % [finished, games, float(total_months) / games, max_bytes])
-	print("crime actions exercised: %d" % crimes_seen.size())
+	print("crime actions exercised: %d, hand-played fight moves: %d" % [crimes_seen.size(), fights_moves])
+	print("minigames played: %s" % minis)
 	print("PROBLEMS: %d" % problems)
 	quit(1 if problems > 0 else 0)
 
 
 func _check(g: GameServer, gi: int) -> void:
+	var f: Dictionary = g.state.fight
+	if not f.is_empty():
+		if g.state.pending.get("kind", "") == "fight" and f.over:
+			_fail("game %d: fight is over but the fight prompt is still up" % gi)
+		var taken := {}
+		for u in f.units:
+			if int(u.hp) < 0 or int(u.hp) > int(u.max) + Balance.STAMINA_CAP_HOLIDAY:
+				_fail("game %d: fighter %s has energy %d" % [gi, u.name, u.hp])
+			if int(u.x) < 0 or int(u.y) < 0 or int(u.x) >= Fight.W or int(u.y) >= Fight.H:
+				_fail("game %d: fighter %s is off the field" % [gi, u.name])
+			if int(u.hp) > 0:
+				var key := Vector2i(int(u.x), int(u.y))
+				if taken.has(key):
+					_fail("game %d: two fighters on %s" % [gi, key])
+				taken[key] = true
+	var c: Dictionary = g.state.get("mini", {})
+	if g.state.pending.get("kind", "") == "mini":
+		if c.is_empty() or c.over:
+			_fail("game %d: minigame prompt is up without a running minigame" % gi)
+	if Mini.is_grid(c):
+		for a in [c.me] + c.get("foes", []) + c.get("guards", []) + c.get("items", []):
+			if Mini.is_wall(c.rows, Vector2i(int(a.x), int(a.y))):
+				_fail("game %d: %s: something in a wall at %d,%d" % [gi, c.game, a.x, a.y])
+		var seen := {}
+		for it in c.get("items", []):
+			var k := Vector2i(int(it.x), int(it.y))
+			if seen.has(k) or k == Vector2i(int(c.me.x), int(c.me.y)):
+				_fail("game %d: %s: two things on %s" % [gi, c.game, k])
+			seen[k] = true
 	for pid in g.state.players:
 		var p: Dictionary = g.state.players[pid]
 		if p.crew.is_empty():

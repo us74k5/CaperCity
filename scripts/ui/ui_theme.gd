@@ -16,6 +16,39 @@ const TEAL_DARK := Color("#0E1A1A")
 const YELLOW := Color("#F2C230")
 const RED_SOFT := Color("#FF9C90")
 
+## Phone layout: set once at startup by main.gd. The HUD reads it to tighten its panels.
+static var compact := false
+
+
+## Phones get the compact layout; tablets and desktops keep the full one. Override with
+## ?mobile=1 / ?desktop=1 in the page URL, or --mobile / --desktop after "--" on the command line.
+## The character model a player appears as: the avatar they picked, or one by player id until then.
+static func look_of(p: Dictionary) -> String:
+	var a: String = p.get("avatar", "")
+	if a != "":
+		return a
+	return Balance.AVATARS[int(p.get("id", 0)) % Balance.AVATARS.size()].id
+
+
+static func detect_compact() -> bool:
+	var args := OS.get_cmdline_user_args()
+	if "--mobile" in args:
+		return true
+	if "--desktop" in args:
+		return false
+	if OS.has_feature("web"):
+		var q := str(JavaScriptBridge.eval("location.search", true))
+		if "mobile=1" in q:
+			return true
+		if "desktop=1" in q:
+			return false
+		if OS.has_feature("web_android") or OS.has_feature("web_ios"):
+			return true
+		# iPads report themselves as Macs; a small touch screen is still a phone.
+		var short_side := float(JavaScriptBridge.eval("Math.min(screen.width, screen.height)", true))
+		return DisplayServer.is_touchscreen_available() and short_side > 0 and short_side < 600
+	return OS.has_feature("mobile")
+
 
 static func box(bg: Color, border: Color = Color(0, 0, 0, 0), radius: int = 12, pad: int = 12, border_w: int = 1) -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()

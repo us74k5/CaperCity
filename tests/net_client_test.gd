@@ -10,6 +10,7 @@ var net: Node
 var my_name := "Tester"
 var starter := false
 var port := 7790
+var url := ""   # e.g. --url=ws://127.0.0.1:8088/ws to go through the nginx proxy
 var ticks := 0
 var seen_other_moves := 0
 var my_moves := 0
@@ -25,6 +26,8 @@ func _init() -> void:
 			starter = true
 		elif a.begins_with("--port="):
 			port = int(a.substr(7))
+		elif a.begins_with("--url="):
+			url = a.substr(6)
 
 
 func _process(_delta: float) -> bool:
@@ -32,7 +35,8 @@ func _process(_delta: float) -> bool:
 		net = root.get_node_or_null("Net")
 		if net == null:
 			return false
-		var err: String = net.join("127.0.0.1", port, my_name, my_name + "'s Crew")
+		net.error_message.connect(func(m: String): print("[%s] server says: %s" % [my_name, m]))
+		var err: String = net.join(url if url != "" else "127.0.0.1", port, my_name, my_name + "'s Crew")
 		print("[%s] join: %s" % [my_name, "ok" if err == "" else err])
 		return false
 	ticks += 1
