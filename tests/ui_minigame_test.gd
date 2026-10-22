@@ -18,6 +18,7 @@ var last_input := 0
 var shot_mid := false
 var start_at_frame := 0          # the next game starts on this frame, once the docks scene is up
 var rng := RandomNumberGenerator.new()
+var squares := {}                # escape/catch: squares the server saw the runner on, moved by this screen
 
 
 func _init() -> void:
@@ -69,6 +70,11 @@ func _play() -> bool:
 			print("FAIL: %s is staged with the building scene still showing over it" % current)
 			return _finish(1)
 		var ms := Time.get_ticks_msec() - started_at
+		if m.game in ["escape", "catch"]:
+			squares[Mini.cell_of(m.me)] = true
+			if int(m.ready) <= 0 and view.mini_view._run.is_empty() and not m.over:
+				print("FAIL: %s: the runner isn't moved on this screen" % current)
+				return _finish(1)
 		if not shot_mid and int(m.ready) <= 0 and ms > 4000:
 			shot_mid = true
 			_shot(current)
@@ -86,6 +92,11 @@ func _play() -> bool:
 		return false
 	# Over: whatever came after (a result, a fight, a police stop) - note it, clear it, next game.
 	print("%s: ended in %s (%s)" % [current, pend, s.pending.get("title", "")])
+	if current in ["escape", "catch"]:
+		if squares.size() < 4:
+			print("FAIL: %s: the runner hardly moved (%d squares)" % [current, squares.size()])
+			return _finish(1)
+		squares.clear()
 	if pend == "":
 		print("FAIL: %s ended with nothing on screen" % current)
 		return _finish(1)

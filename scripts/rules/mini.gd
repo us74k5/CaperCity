@@ -45,12 +45,16 @@ static func create(game: String, title: String, level: int, rng: RandomNumberGen
 	return m
 
 
-## A player input: {"dir": "N"} for the grid games, {"turn": 1}/{"dial": i} for the safe.
+## A player input: {"dir": "N"} for the grid games ({"at": [x, y]} from a chase runner's own
+## client, see Chase.place), {"turn": 1}/{"dial": i} for the safe.
 static func input(m: Dictionary, intent: Dictionary) -> String:
 	if m.over:
 		return "It's over."
 	match str(m.game):
 		"escape", "catch":
+			if intent.has("at"):
+				var at: Array = intent.at
+				return Chase.place(m, Vector2i(int(at[0]), int(at[1])))
 			return Chase.steer(m, str(intent.get("dir", "")))
 		"sneak", "loot", "containers", "train":
 			return queue_step(m, str(intent.get("dir", "")))

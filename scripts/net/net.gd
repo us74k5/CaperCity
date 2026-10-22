@@ -161,7 +161,8 @@ func send_intent(intent: Dictionary) -> void:
 		var err := _apply(my_peer, intent)
 		if err != "":
 			error_message.emit(err)
-		_broadcast()
+		if not _mini_running(intent):
+			_broadcast()
 	elif my_peer != 0:
 		_rpc_intent.rpc_id(1, intent)
 
@@ -217,7 +218,15 @@ func _rpc_intent(intent: Dictionary) -> void:
 	if err != "":
 		_rpc_error.rpc_id(sender, err)
 		_say("%s: %s refused: %s" % [_who(sender), intent.get("t", "?"), err])
-	_broadcast()
+	if not _mini_running(intent):
+		_broadcast()
+
+
+## Keys during a running minigame: the next tick sends the minigame's own small update, so there's
+## no need to send the whole game (tens of KB) to everyone on every key press.
+func _mini_running(intent: Dictionary) -> bool:
+	var m: Dictionary = server.state.get("mini", {})
+	return str(intent.get("t", "")) == "mini" and not m.is_empty() and not m.over
 
 
 @rpc("authority", "call_remote", "reliable")

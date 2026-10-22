@@ -41,9 +41,10 @@ static func crew_units(p: Dictionary, side: int) -> Array:
 
 
 ## An enemy squad sized and armed from `power` (about 3 for a shop owner up to 20+ for a SWAT-sized response).
-static func squad(kind: String, power: int, rng: RandomNumberGenerator) -> Array:
+static func squad(kind: String, power: int, rng: RandomNumberGenerator, count: int = -1) -> Array:
 	var foe: Dictionary = FOES[kind]
-	var count := clampi(1 + power / 4, 1, 6)
+	if count < 0:
+		count = clampi(1 + power / 4, 1, 6)
 	var gear: int = foe.low       # batons for beat cops, clubs for shop staff
 	if power >= 14:
 		gear = 7

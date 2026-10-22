@@ -116,6 +116,77 @@ func _init() -> void:
 	_check(gs.state.pending.get("title", "") == "While you were away", "Ana hears what happened when she's out")
 	_check("collectors" in str(gs.state.pending.get("text", "")), "and why")
 
+	# Out of jail with nothing on you: a checkpoint waves you on.
+	gs.state.pending = {}
+	gs.state.order = [1, 2]
+	gs.state.active = 0
+	ana.jail = 0
+	ana.immunity = 0
+	ana.heat = 20
+	gs._arrest(ana)
+	ana.jail = 0
+	ana.heat = 20
+	gs._random_stop(ana)
+	_check(gs.state.pending.get("kind", "") == "result" and gs.state.pending.good, "fresh out of jail, they let you go")
+	gs.state.pending = {}
+	# A wanted crew with nothing on it still gets a light response once it's back at work.
+	gs._mark_scene(ana, bank)
+	gs._random_stop(ana)
+	_check(gs.state.pending.get("kind", "") == "police" and int(gs.state.pending.cops) <= 3, "wanted, nothing on you: a light response")
+	gs.state.pending = {}
+
+	# The response follows what they catch you with.
+	for case in [[3, 2], [8, 4], [12, 8]]:
+		ana.electronics = case[0]
+		gs._random_stop(ana)
+		var pend: Dictionary = gs.state.pending
+		_check(pend.get("kind", "") == "police" and int(pend.cops) == case[1],
+			"%d devices: %d officers (got %s)" % [case[0], case[1], pend.get("cops", "-")])
+		gs.state.pending = {}
+	ana.electronics = 0
+	gs._police_encounter(ana, "Kidnap a child went wrong.", int(GameServer.CRIMES.kidnap_child.sev))
+	_check(int(gs.state.pending.cops) == 8 and int(gs.state.pending.sev) == 10, "a kidnapping brings the whole squad")
+	gs.handle(1, {"t": "pending", "id": "run"})
+	var hard: float = gs.state.mini.foes[0].speed
+	gs.state.mini = {}
+	gs.state.pending = {}
+	gs._police_encounter(ana, "Pick some pockets went wrong.", int(GameServer.CRIMES.pickpocket.sev))
+	_check(int(gs.state.pending.cops) <= 2, "a pickpocket gets one or two")
+	gs.handle(1, {"t": "pending", "id": "run"})
+	var easy: float = gs.state.mini.foes[0].speed
+	print("cop speed: pickpocket %.3f, kidnapping %.3f (you run %.3f)" % [easy, hard, Chase.MY_SPEED])
+	_check(easy < hard and hard < Chase.MY_SPEED, "harder crimes, faster cops, never faster than you")
+
+	# The runner's own screen moves them; the server checks each step.
+	var m: Dictionary = gs.state.mini
+	m.ready = 0
+	var at := Mini.cell_of(m.me)
+	var open := ""
+	var wall := ""
+	for d in Mini.DIRS:
+		if Mini.is_wall(m.rows, at + Mini.DIRS[d]):
+			wall = d
+		elif open == "":
+			open = d
+	_check(Mini.input(m, {"at": [at.x + 2, at.y]}) == "" and Mini.cell_of(m.me) == at, "no jumping squares")
+	if wall != "":
+		var w: Vector2i = at + Mini.DIRS[wall]
+		Mini.input(m, {"at": [w.x, w.y]})
+		_check(Mini.cell_of(m.me) == at, "no running through walls")
+	var nxt: Vector2i = at + Mini.DIRS[open]
+	Mini.input(m, {"at": [nxt.x, nxt.y]})
+	_check(Mini.cell_of(m.me) == nxt and m.me.dir == open, "a step is taken at once")
+	var moved := 0
+	for i in 6:   # far quicker than anyone can run
+		var here := Mini.cell_of(m.me)
+		var back: Vector2i = at if here == nxt else nxt
+		Mini.input(m, {"at": [back.x, back.y]})
+		if Mini.cell_of(m.me) != here:
+			moved += 1
+	_check(moved <= 2, "no running faster than your legs (%d quick steps taken)" % moved)
+	gs.state.mini = {}
+	gs.state.pending = {}
+
 	print("jail: %s" % ("ok" if fails == 0 else "%d FAILED" % fails))
 	quit(1 if fails > 0 else 0)
 

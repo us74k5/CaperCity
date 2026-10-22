@@ -647,7 +647,7 @@ func _show_overlay(kind: String) -> void:
 
 func _move(dir: String) -> void:
 	if Net.state.get("pending", {}).get("kind", "") == "mini":
-		_mini_panel.press(dir)
+		_mini_press(dir)
 	else:
 		if city_view:
 			city_view.follow()
@@ -851,6 +851,20 @@ func _route_steps(start: Vector2i, route: Array) -> int:
 	return used
 
 
+## Chases run on this screen first (see MiniView.steer); everything else goes to the server.
+func _mini_press(dir: String) -> void:
+	if city_view and city_view.mini_view.steer(dir):
+		return
+	_mini_panel.press(dir)
+
+
+## Direction keys in a minigame are caught before the buttons can use them to move focus around.
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and Net.is_my_turn() and Net.state.get("pending", {}).get("kind", "") == "mini" \
+			and Net.state.get("mini", {}).get("game", "") != "safe" and event.keycode in [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT]:
+		_unhandled_key_input(event)
+
+
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event.pressed:
 		return
@@ -866,7 +880,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	elif event is InputEventKey and map.has(event.keycode) and Net.is_my_turn() and chasing:
 		# Chases keep you running, so one press is enough; in the step-by-step games holding a key repeats.
 		if not event.echo or not game in ["escape", "catch"]:
-			_mini_panel.press(map[event.keycode])
+			_mini_press(map[event.keycode])
 		get_viewport().set_input_as_handled()
 	elif event is InputEventKey and map.has(event.keycode) and Net.is_my_turn() and Net.state.pending.is_empty():
 		_path.clear()

@@ -38,6 +38,7 @@ var _sight: MultiMeshInstance3D
 var _clock := 0.0               # the server tick we're showing, eased between updates
 var _last_tick := -1
 var _t := 0.0
+var _run: Dictionary = {}       # my own runner in a chase, moved here at once (see Chase.place)
 
 
 func showing() -> bool:
@@ -112,6 +113,9 @@ func show_mini(m: Dictionary, look: String, col: Color) -> void:
 				_build_track()
 	_clock = float(m.tick)
 	_last_tick = int(m.tick)
+	if _game in ["escape", "catch"] and Net.is_my_turn():
+		var c := Mini.cell_of(m.me)
+		_run = {"cell": c, "from": c, "k": 1.0, "dir": "", "want": "", "off": 0.0}
 	_place_all(m)
 
 
@@ -126,6 +130,7 @@ func clear() -> void:
 	_items.clear()
 	_train = null
 	_sight = null
+	_run = {}
 
 
 func _process(delta: float) -> void:
@@ -142,11 +147,75 @@ func _process(delta: float) -> void:
 	_clock = minf(_clock + delta / Mini.TICK, float(m.tick))
 	if m.over:
 		_clock = float(m.tick)
+		_run = {}
+	_advance_run(m, delta)
 	_place_all(m)
 
 
+## A direction key in a chase: turn now if the way is open, else as soon as it is; turning back
+## happens mid-step. Returns false if this screen isn't the runner's.
+func steer(dir: String) -> bool:
+	if _run.is_empty():
+		return false
+	_run.want = dir
+	if float(_run.k) < 1.0 and dir != "" and dir == Mini.BACK.get(_run.dir, ""):
+		var to: Vector2i = _run.from
+		_run.from = _run.cell
+		_run.cell = to
+		_run.k = 1.0 - float(_run.k)
+		_run.dir = dir
+		_report()
+	return true
+
+
+## Runs my runner at running speed on this screen and tells the server each square it steps onto.
+func _advance_run(m: Dictionary, delta: float) -> void:
+	if _run.is_empty() or int(m.ready) > 0:
+		return
+	var rows: Array = m.rows
+	_run.k = float(_run.k) + delta * Chase.MY_SPEED / Mini.TICK
+	while float(_run.k) >= 1.0:
+		var at: Vector2i = _run.cell
+		var dir: String = _run.dir
+		var want: String = _run.want
+		if want != "" and not Mini.is_wall(rows, at + Mini.DIRS[want]):
+			dir = want
+		if dir == "" or Mini.is_wall(rows, at + Mini.DIRS[dir]):
+			_run.k = 1.0   # wait at the wall, ready to go the moment a way opens
+			break
+		_run.dir = dir
+		_run.from = at
+		_run.cell = at + Mini.DIRS[dir]
+		_run.k = float(_run.k) - 1.0
+		_report()
+	# If the server didn't take a step, go back to where it has us.
+	var srv := Mini.cell_of(m.me)
+	if srv != _run.cell and srv != _run.from:
+		_run.off = float(_run.off) + delta
+		if float(_run.off) > 0.5:
+			_run = {"cell": srv, "from": srv, "k": 1.0, "dir": "", "want": "", "off": 0.0}
+	else:
+		_run.off = 0.0
+
+
+func _report() -> void:
+	var c: Vector2i = _run.cell
+	Net.send_intent({"t": "mini", "at": [c.x, c.y]})
+
+
 func _place_all(m: Dictionary) -> void:
-	_place(_me, m.me, m)
+	if _run.is_empty():
+		_place(_me, m.me, m)
+	else:
+		var from := Vector3(_run.from.x + 0.5, 0, _run.from.y + 0.5)
+		var to := Vector3(_run.cell.x + 0.5, 0, _run.cell.y + 0.5)
+		_me.node.position = from.lerp(to, minf(float(_run.k), 1.0))
+		if str(_run.dir) != "":
+			var d: Vector2i = Mini.DIRS[_run.dir]
+			_me.node.rotation.y = atan2(d.x, d.y)
+		var anim := "sprint" if float(_run.k) < 1.0 else "idle"
+		if _me.anim.current_animation != anim:
+			_me.anim.play(anim, 0.1)
 	var foes: Array = m.get("foes", m.get("guards", []))
 	for i in mini(_foes.size(), foes.size()):
 		_place(_foes[i], foes[i], m)

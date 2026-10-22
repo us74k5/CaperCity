@@ -6,6 +6,8 @@ extends RefCounted
 ## Every chase gets a fresh braided maze from our own generator. Movement is cell by cell; an actor with
 ## speed s moves one cell every 1/s ticks and keeps going the way it's headed, so a tapped direction
 ## keeps you running and turns can be queued early.
+## The runner's own screen moves them the moment a key is pressed and reports each square (place);
+## the server checks the step and the speed, and does the catching. Difficulty is the cops' speed.
 
 const ESCAPE_SECONDS := 20
 const CATCH_SECONDS := 15
@@ -20,7 +22,7 @@ static func create(kind: String, level: int, rng: RandomNumberGenerator) -> Dict
 		"left": int((ESCAPE_SECONDS if kind == "escape" else CATCH_SECONDS) / Mini.TICK),
 	}
 	if kind == "escape":
-		var speed := clampf(0.12 + 0.01 * level, 0.12, 0.2)
+		var speed := cop_speed(level)
 		for corner in [Vector2i(1, 1), Vector2i(Mini.W - 2, 1), Vector2i(1, Mini.H - 2), Vector2i(Mini.W - 2, Mini.H - 2)]:
 			c.foes.append(Mini.actor(corner, speed))
 	else:
@@ -33,6 +35,44 @@ static func create(kind: String, level: int, rng: RandomNumberGenerator) -> Dict
 		var start: Vector2i = picks[rng.randi() % picks.size()] if picks.size() > 0 else Vector2i(1, 1)
 		c.foes.append(Mini.actor(start, clampf(0.225 + 0.003 * level, 0.225, 0.25)))
 	return c
+
+
+## How fast the cops run for a crime of severity `level` (0-10): from under half your speed for a
+## pickpocket to nearly yours for a kidnapping.
+static func cop_speed(level: int) -> float:
+	return 0.08 + 0.014 * clampi(level, 0, 10)
+
+
+## The runner's client stepped onto `cell`. It must be next to where they are, not a wall, and not
+## faster than running speed (with a step of slack for the network bunching reports up). A refused
+## step is dropped quietly: the client sees it wasn't taken and snaps back.
+static func place(c: Dictionary, cell: Vector2i) -> String:
+	if int(c.ready) > 0:
+		return ""
+	var me: Dictionary = c.me
+	var at := Mini.cell_of(me)
+	if cell == at:
+		return ""
+	var d := cell - at
+	if absi(d.x) + absi(d.y) != 1 or Mini.is_wall(c.rows, cell):
+		return ""
+	if not c.get("client", false):
+		c.client = true
+		me.acc = 1.0
+	if float(me.acc) <= -1.0:
+		return ""
+	me.acc = float(me.acc) - 1.0
+	for k in Mini.DIRS:
+		if Mini.DIRS[k] == d:
+			me.dir = k
+	c.want = ""
+	Mini.move_actor(c, me, cell)
+	for f in c.foes:
+		var f_now := Mini.cell_of(f)
+		if f_now == cell or f_now == at:   # ran into them, or through them
+			c.over = true
+			c.won = c.game == "catch"
+	return ""
 
 
 ## Which way the player wants to run next ("" to stop).
@@ -49,7 +89,10 @@ static func step(c: Dictionary, rng: RandomNumberGenerator) -> void:
 	c.left = int(c.left) - 1
 	var me: Dictionary = c.me
 	var was := Mini.cell_of(me)
-	_move_me(c)
+	if c.get("client", false):
+		me.acc = minf(1.0, float(me.acc) + float(me.speed))
+	else:
+		_move_me(c)
 	for i in c.foes.size():
 		var f: Dictionary = c.foes[i]
 		var f_was := Mini.cell_of(f)

@@ -7,7 +7,7 @@ func _init():
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 42
 	for game in ["escape", "catch", "sneak", "train"]:
-		for level in [0, 4, 8]:
+		for level in ([2, 6, 10] if game == "escape" else [0, 4, 8]):
 			var wins := 0
 			var n := 150
 			var secs := 0.0

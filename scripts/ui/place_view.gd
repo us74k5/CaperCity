@@ -69,6 +69,7 @@ var _t := 0.0
 var _focus_x := 0.0
 var casino: Node3D = null       # the casino's interior, when that's the place on show
 var arms: Node3D = null         # the arms dealer's store and gym, likewise
+var lot: Node3D = null          # and the car dealer's lot
 var _aabbs := {}
 
 
@@ -82,6 +83,8 @@ func show_place(b: Dictionary, p: Dictionary) -> void:
 	if key == _key:
 		if arms:
 			arms.update(p, crew_looks)
+		if lot:
+			lot.update(p)
 		return
 	clear()
 	_key = key
@@ -98,6 +101,7 @@ func clear() -> void:
 	_bobbers.clear()
 	casino = null
 	arms = null
+	lot = null
 
 
 ## Where the camera stands: across the street, eye a little above head height, with the building
@@ -107,6 +111,8 @@ func camera_pose(aspect: float) -> Transform3D:
 		return casino.camera_pose(aspect)
 	if arms:
 		return arms.camera_pose(aspect)
+	if lot:
+		return lot.camera_pose(aspect)
 	var shift := 3.0 if aspect > 1.2 else 0.0
 	var eye := global_position + Vector3(_focus_x + shift, 2.3, 15.0)
 	var look := global_position + Vector3(_focus_x + shift, 3.0, 0.0)
@@ -162,6 +168,12 @@ func _build(b: Dictionary, p: Dictionary) -> void:
 		arms = preload("res://scripts/ui/arms_view.gd").new()
 		_set.add_child(arms)
 		arms.build(b, p, crew_looks)
+		return
+	if t == "car_dealer":
+		# And the car dealer: a lot full of cars, the best ones in the back row to steal.
+		lot = preload("res://scripts/ui/lot_view.gd").new()
+		_set.add_child(lot)
+		lot.build(b, p)
 		return
 
 	_backdrop(rng, green)

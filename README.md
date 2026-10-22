@@ -47,6 +47,7 @@ Force a layout with `?mobile=1` or `?desktop=1` in the URL (or `-- --mobile` whe
   each stat on its own button: Muscle, Smarts, Nerve, Stamina and your starting bankroll. Each stat rolls once, and you
   get 3 re-rolls to spend on any of them (a re-roll can go either way). Characters will get their own perks later.
   The host can start before everyone is done; whatever's left is picked for them.
+- **Music:** the title screen's Music button, or **M** in game, turns the background music on or off (remembered).
 - **Look around:** drag the map with the left or right mouse button (or a finger). Dragging never moves your crew;
   **Centre** (or Space) goes back to whoever's turn it is.
 - **Move:** tap anywhere on the map (or a building) to walk there, or use arrow keys / WASD / the on-screen arrows.
@@ -72,9 +73,14 @@ Force a layout with `?mobile=1` or `?desktop=1` in the URL (or `-- --mobile` whe
   kidnapping with ransom drops, the casino, the subway and trains, the print shop, bribing the police chief and bailing out rivals.
 - Police checks on their own screen (a random stop while walking happens at most once a turn; heat makes it likelier) (squad car, officers, siren bar): make a run for it, bribe them, or shoot it out.
   Running for it is a real-time maze chase, as in the original: four cops close in and you must stay free for 20 seconds.
-  Getting caught, a double-crossing cop or a shootout leads to a fight; losing means court and jail.
-  Jail impounds your car, takes your crew's weapons and costs a $500 fine. The cops watch every building
-  you've hit: walk back into one and you're arrested on the spot (a paid-off police chief still covers you).
+  Your runner moves on your own screen the instant you press a key; the server checks each step.
+  The response fits what they caught you at, or what they find on you: one or two beat cops (slow to chase) for a
+  pickpocket or up to 5 stolen devices, four or five for a robbery, a stolen car or 6-10 devices, and the full squad
+  (eight officers, nearly as fast as you) for a kidnapping or more than 10 devices. Bribes cost more and work less often
+  for big crimes. Getting caught, a double-crossing cop or a shootout leads to a fight; losing means court and jail.
+  Jail impounds your car, takes your crew's weapons and stolen goods and costs a $500 fine. Fresh out of jail with
+  nothing on you, a checkpoint lets you go. The cops watch every building you've hit: walk back into one and you're
+  arrested on the spot (a paid-off police chief still covers you).
 - The ransom chase: when the parents cheat, catch the runaway with the money case in 15 seconds.
 - The original's other real-time minigames, each with fresh levels every time:
   sneaking past guards (armored truck, the dignitary, villa break-ins, smuggling a suitcase through airport customs),
@@ -87,11 +93,9 @@ Force a layout with `?mobile=1` or `?desktop=1` in the URL (or `-- --mobile` whe
   hit jobs, turf wars and gang wars (the defending crew is played by the computer for now).
 
 **Not yet:** live PvP control in gang wars (the defender is computer-played), lawyers.
-For now a run from the police is a stats roll; getting caught still leads to the fight.
-For now those resolve automatically from your crew's stats.
 
 ## Art
-The city is 3D, built from Kenney's City Kits (Commercial, Industrial, Suburban, Roads) and Mini Characters, CC0, www.kenney.nl.
+The city is 3D, built from Kenney's City Kits (Commercial, Industrial, Suburban, Roads), Car Kit and Mini Characters, CC0, www.kenney.nl.
 The models live in `assets/models/` with each kit's license. Each player is an animated character on a disc of their color
 (walking, idling, or driving once they own a car). Officers stand outside Police HQ and townsfolk idle by some buildings.
 Cars and water are simple shapes made in code.
@@ -101,7 +105,8 @@ Cars and water are simple shapes made in code.
 godot --headless --path . --script res://tests/soak_test.gd       # 40 random 3-player games, checks for broken states
 godot --headless --path . --script res://tests/city_map_test.gd   # the original map and its movement rules
 godot --headless --path . --script res://tests/creation_test.gd   # making your boss, and how often police stop you
-godot --headless --path . --script res://tests/jail_test.gd       # jail costs, crime scenes, loan collectors, ransom after a fight
+godot --headless --path . --script res://tests/jail_test.gd       # jail, crime scenes, loan collectors, police response by crime, chase steps
+godot --headless --path . --script res://tests/ui_lot_test.gd     # the car lot, and the camera in among the cars when stealing one
 godot --headless --path . --script res://tests/ui_creator_test.gd   # the creator, dragging the map, the gun store and gym
 godot --headless --path . --script res://tests/ui_smoke_test.gd   # drives the real menus/HUD through a game
 godot --headless --path . --script res://tests/ui_fight_test.gd   # police stop -> shoot it out -> fight played by tapping
