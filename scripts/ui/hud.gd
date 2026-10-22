@@ -143,9 +143,12 @@ func _build() -> void:
 	lp.add_child(_log)
 	add_child(lp)
 	if UiTheme.compact:
-		# Phones: the menu runs the full height (over the standings) and the log keeps a few lines.
+		# Phones: the menu runs the full height (over the standings), left of the quit X, and the log
+		# keeps a few lines.
 		_menu_panel.offset_top = 12
 		_menu_panel.offset_bottom = -76
+		_menu_panel.offset_left = -496
+		_menu_panel.offset_right = -68
 		lp.custom_minimum_size = Vector2(400, 92)
 		_log.custom_minimum_size = Vector2(380, 82)
 		_log.add_theme_font_size_override("normal_font_size", 14)
@@ -158,16 +161,24 @@ func _build() -> void:
 	_war_btn = UiTheme.button("Gang war")
 	_skip_btn = UiTheme.button("Skip turn")
 	_end_btn = UiTheme.button("End turn", true)
-	_leave_btn = UiTheme.button("Leave")
-	for b in [_leave_btn, _skip_btn, _crew_btn, _war_btn, _end_btn]:
+	for b in [_skip_btn, _crew_btn, _war_btn, _end_btn]:
 		b.custom_minimum_size.x = 110
 		_actions.add_child(b)
 	_crew_btn.pressed.connect(func(): _show_overlay("crew"))
 	_war_btn.pressed.connect(func(): _show_overlay("war"))
 	_end_btn.pressed.connect(func(): Net.send_intent({"t": "end_turn"}))
 	_skip_btn.pressed.connect(func(): Net.send_intent({"t": "skip"}))
-	_leave_btn.pressed.connect(func(): _show_overlay("leave"))
 	add_child(_actions)
+
+	# Top right: quit the game. An X up here, well away from a building's own "Leave".
+	_leave_btn = UiTheme.button("×", false, 48)
+	_leave_btn.custom_minimum_size.x = 48
+	_leave_btn.tooltip_text = "Quit the game"
+	_leave_btn.add_theme_font_size_override("font_size", 30)
+	_leave_btn.add_theme_color_override("font_color", UiTheme.CORAL)
+	_leave_btn.focus_mode = Control.FOCUS_NONE
+	_leave_btn.pressed.connect(func(): _show_overlay("leave"))
+	add_child(_leave_btn)
 
 	# Bottom-center: d-pad
 	_dpad = GridContainer.new()
@@ -260,8 +271,10 @@ func _layout() -> void:
 	_centre_btn.position = Vector2(vs.x - _centre_btn.size.x - 12, _dpad.position.y - _centre_btn.size.y - 10)
 	_stall.reset_size()
 	_stall.position = Vector2((vs.x - _stall.size.x) / 2.0, _banner.position.y + _banner.size.y + 10)
+	_leave_btn.reset_size()
+	_leave_btn.position = Vector2(vs.x - _leave_btn.size.x - 12, 12)
 	_standings_panel.reset_size()
-	_standings_panel.position = Vector2(vs.x - _standings_panel.size.x - 12, 12)
+	_standings_panel.position = Vector2(_leave_btn.position.x - _standings_panel.size.x - 8, 12)
 	_banner.reset_size()
 	_banner.position = Vector2((vs.x - _banner.size.x) / 2.0, 12)
 	for c in [_modal, _overlay]:
@@ -274,9 +287,9 @@ func _layout() -> void:
 	_mini_panel.reset_size()
 	_mini_panel.position = Vector2((vs.x - _mini_panel.size.x) / 2.0, 12)   # in place of the turn banner
 	if _police_scroll:
-		_police_scroll.custom_minimum_size.y = minf(_police_box.get_combined_minimum_size().y + 36, vs.y - 46)
+		_police_scroll.custom_minimum_size.y = minf(_police_box.get_combined_minimum_size().y + 36, vs.y - 46 - _leave_btn.size.y)
 	_police_panel.reset_size()
-	_police_panel.position = Vector2(vs.x - _police_panel.size.x - 12, maxf(12.0 if UiTheme.compact else 120.0, (vs.y - _police_panel.size.y) / 2.0))
+	_police_panel.position = Vector2(vs.x - _police_panel.size.x - 12, maxf(_leave_btn.size.y + 20.0 if UiTheme.compact else 120.0, (vs.y - _police_panel.size.y) / 2.0))
 	_fight_bar.custom_minimum_size.x = minf(vs.x - 24, 1100)
 	_fight_bar.reset_size()
 	_fight_bar.position = Vector2((vs.x - _fight_bar.size.x) / 2.0, vs.y - _fight_bar.size.y - 12)

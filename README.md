@@ -58,7 +58,7 @@ Force a layout with `?mobile=1` or `?desktop=1` in the URL (or `-- --mobile` whe
 - **Minigames:** arrow keys / WASD / the on-screen pad. In chases you keep running until you turn (press turns early);
   in the sneaking and pushing games each press is one step (hold to repeat). The safe: up/down turns a dial, left/right or 1/2/3 picks one.
 - **Mouse wheel / pinch:** zoom.
-- **Leave a game:** the Leave button (or Esc) takes you back to the title screen. The room host also gets
+- **Leave a game:** the **×** in the top-right corner (or Esc) takes you back to the title screen. The room host also gets
   **End the game for everyone** there, and **New game** when a game is won.
 - **The motorway:** with a car, each cell costs half a step (the banner shows e.g. "11½ steps left"). Lanes run one way; turn at an exit.
 
