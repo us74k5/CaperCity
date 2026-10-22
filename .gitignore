@@ -1,7 +1,6 @@
 # Godot
 .godot/
 export/
-export_presets.cfg
 *.translation
 
 # Original DOS game files and anything extracted from them stay out of the repo
@@ -18,3 +17,6 @@ extraction_output/
 .DS_Store
 Thumbs.db
 *.tmp
+
+# Python
+__pycache__/

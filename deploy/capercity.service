@@ -1,0 +1,20 @@
+[Unit]
+Description=Caper City game server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=capercity
+Group=capercity
+ExecStart=/opt/capercity/capercity.x86_64 --headless -- --server --port=7777
+Restart=always
+RestartSec=2
+StateDirectory=capercity
+Environment=HOME=/var/lib/capercity
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

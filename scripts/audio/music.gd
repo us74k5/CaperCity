@@ -56,6 +56,10 @@ func is_on() -> bool:
 	return _enabled
 
 
+func is_enabled() -> bool:   # older name, used by the web title screen
+	return _enabled
+
+
 func toggle() -> bool:
 	_enabled = not _enabled
 	var cfg := ConfigFile.new()
@@ -89,8 +93,14 @@ func scene_for_state(s: Dictionary) -> String:
 	var active: Dictionary = {}
 	if s.get("order", []).size() > 0:
 		active = s.players[s.order[s.active]]
-	if pend.get("kind", "") == "police":
-		return "police_standoff"
+	match str(pend.get("kind", "")):
+		"police":
+			return "police_standoff"
+		"fight":
+			return "fight"
+		"mini":
+			var game := str(s.get("mini", {}).get("game", ""))
+			return "chase" if game in ["escape", "catch"] else "heist"
 	if not active.is_empty() and int(active.get("jail", 0)) > 0:
 		return "jail"
 	if not active.is_empty() and int(active.get("inside", -1)) >= 0:

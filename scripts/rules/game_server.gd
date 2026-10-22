@@ -11,7 +11,9 @@ const BLACKMAIL_TYPES := ["car_dealer", "casino", "bank", "dept_store", "villa",
 
 var state: Dictionary = {}
 var rng := RandomNumberGenerator.new()
-var _cues: Array = []   # sound cues raised while handling the current intent
+var _tokens := {}   # pid -> the device token that may reclaim that crew (kept out of the broadcast state)
+var stale_peers: Array = []   # connections a returning device replaced; the network layer closes them
+var _cues: Array = []   # music stings raised by the current intent/tick (see scripts/audio/music.gd)
 
 
 func _init(seed_value: int = 0) -> void:
@@ -22,7 +24,7 @@ func _init(seed_value: int = 0) -> void:
 		"phase": "lobby", "seed": seed_value, "month": 1, "target": 35,
 		"players": {}, "order": [], "active": 0, "next_pid": 1,
 		"room_host": 0, "city": CityGen.generate(seed_value),
-		"log": [], "pending": {}, "winner": 0, "rev": 0, "cue": {"n": 0, "names": []},
+		"log": [], "pending": {}, "fight": {}, "mini": {}, "winner": 0, "rev": 0, "cue": {"n": 0, "names": []},
 	}
 	_init_buildings()
 
@@ -36,7 +38,7 @@ func handle(peer: int, intent: Dictionary) -> String:
 	_cues = []
 	match t:
 		"join":
-			err = _join(peer, str(intent.get("name", "")), str(intent.get("crew", "")), false)
+			err = _join(peer, str(intent.get("name", "")), str(intent.get("crew", "")), false, str(intent.get("token", "")))
 		"add_local":
 			if peer != state.room_host:
 				return "Only the room host can add local players."
@@ -48,10 +50,12 @@ func handle(peer: int, intent: Dictionary) -> String:
 		"skip":
 			if peer != state.room_host:
 				return "Only the room host can skip a turn."
-			if state.phase == "playing":
-				_log("%s's turn was skipped by the host." % _active().name, "info")
-				state.pending = {}
-				_end_turn()
+			skip_turn("by the host")
+		"avatar", "roll", "ready":
+			var me := _creating(peer)
+			if me.is_empty():
+				return "Your boss is already on the streets."
+			err = _create_step(me, t, intent)
 		_:
 			if state.phase != "playing":
 				return "The game is not running."
@@ -59,14 +63,59 @@ func handle(peer: int, intent: Dictionary) -> String:
 			if int(p.owner) != peer:
 				return "It's not your turn."
 			err = _handle_turn(p, t, intent)
-	if _cues.size() > 0:
-		state.cue = {"n": int(state.cue.n) + 1, "names": _cues.duplicate()}
+	_flush_cues()
 	state.rev = int(state.rev) + 1
 	return err
 
 
+## Ends the active player's turn from outside it (they're gone, or stuck).
+func skip_turn(why: String) -> void:
+	if state.phase != "playing":
+		return
+	_cues = []
+	_log("%s's turn was skipped %s." % [_active().name, why], "info")
+	state.pending = {}
+	state.fight = {}
+	state.mini = {}
+	_end_turn()
+	_flush_cues()
+	state.rev = int(state.rev) + 1
+
+
+## Advances a running minigame in real time. Returns 0 if nothing changed, 1 if only the minigame
+## moved (send just that), or 2 if it ended and the whole state changed.
+var _mini_clock := 0.0
+var _safe_secret: Array = []     # the safe's combination stays here, out of the broadcast state
+
+
+func tick(delta: float) -> int:
+	var m: Dictionary = state.get("mini", {})
+	if m.is_empty() or m.over or state.phase != "playing":
+		_mini_clock = 0.0
+		return 0
+	_mini_clock += minf(delta, 0.25)
+	var stepped := false
+	while _mini_clock >= Mini.TICK and not m.over:
+		_mini_clock -= Mini.TICK
+		Mini.step(m, rng)
+		stepped = true
+	if m.over:
+		_cues = []
+		_end_mini(_active())
+		_flush_cues()
+		state.rev = int(state.rev) + 1
+		return 2
+	return 1 if stepped else 0
+
+
 func _handle_turn(p: Dictionary, t: String, intent: Dictionary) -> String:
-	if not state.pending.is_empty() and t != "pending":
+	if t == "mini" and state.pending.get("kind", "") == "mini":
+		var m: Dictionary = state.mini
+		var err := Safe.input(m, intent, _safe_secret) if m.game == "safe" else Mini.input(m, intent)
+		if m.over:
+			_end_mini(p)
+		return err
+	if not state.pending.is_empty() and t != "pending" and not (t == "fight" and state.pending.kind == "fight"):
 		return "Answer the prompt first."
 	match t:
 		"move":
@@ -77,6 +126,8 @@ func _handle_turn(p: Dictionary, t: String, intent: Dictionary) -> String:
 			return _pending_choose(p, str(intent.get("id", "")))
 		"gang_war":
 			return _gang_war(p, int(intent.get("target", 0)))
+		"fight":
+			return _fight_intent(p, intent)
 		"end_turn":
 			if int(p.inside) >= 0:
 				_leave(p)
@@ -87,15 +138,33 @@ func _handle_turn(p: Dictionary, t: String, intent: Dictionary) -> String:
 
 # --------------------------------------------------------------------------- lobby
 
-func _join(peer: int, pname: String, crew: String, local: bool) -> String:
-	if state.phase != "lobby":
-		return "The game has already started."
-	if state.players.size() >= 6:
-		return "The room is full."
+## Joins the room. During a game a newcomer gets a fresh crew at the back of the turn order, and a
+## device coming back (same token) takes over the crew it left behind.
+func _join(peer: int, pname: String, crew: String, local: bool, token: String = "") -> String:
 	if not local:
 		for pid in state.players:
 			if int(state.players[pid].owner) == peer and not state.players[pid].local:
 				return ""
+	if state.phase == "over":
+		return "This game is over. The room host can start a new one."
+	if local and state.phase != "lobby":
+		return "The game has already started."
+	if state.phase == "playing" and token != "":
+		for pid in state.players:
+			var old: Dictionary = state.players[pid]
+			if not old.local and _tokens.get(pid, "") == token:
+				if old.connected:
+					stale_peers.append(int(old.owner))   # its old connection died without closing
+					if int(state.room_host) == int(old.owner):
+						state.room_host = peer
+				old.owner = peer
+				old.connected = true
+				if state.room_host == 0:
+					state.room_host = peer
+				_log("%s is back." % old.name, "info")
+				return ""
+	if state.players.size() >= 6:
+		return "The room is full."
 	if state.room_host == 0:
 		state.room_host = peer
 	var pid: int = state.next_pid
@@ -112,12 +181,24 @@ func _join(peer: int, pname: String, crew: String, local: bool) -> String:
 		"color": Balance.PLAYER_COLORS[(pid - 1) % Balance.PLAYER_COLORS.size()],
 		"cash": rng.randi_range(Balance.START_CASH[0], Balance.START_CASH[1]), "points": 0,
 		"crew": [boss], "car": 0, "pos": [0, 0], "steps": 0, "steps_max": Balance.CARS[0].steps,
-		"inside": -1, "menu_path": [], "menu": [],
+		"inside": -1, "menu_path": [], "menu": [], "half_step": false, "stopped": false,
 		"jail": 0, "holiday": 0, "room": false, "rent_paid": 0,
-		"loan": 0, "loan_months": 0, "passport": false, "immunity": 0, "heat": 0,
-		"radios": 0, "electronics": 0, "dirt": "", "hostage": {}, "ransom": {},
+		"loan": 0, "loan_months": 0, "passport": false, "immunity": 0, "heat": 0, "scenes": [], "new_scene": "", "news": "", "clean": false, "car_stolen": false,
+		"radios": 0, "electronics": 0, "dirt": "", "hostage": {}, "ransom": {}, "suitcase": {},
 		"gang_war_used": false, "connected": true,
+		# Character creation (see _create_step): local seats skip it.
+		"avatar": "", "ready": false, "rolls": {}, "rerolls": Balance.REROLLS,
 	}
+	if local:
+		_auto_create(state.players[pid])
+	if token != "":
+		_tokens[pid] = token
+	if state.phase == "playing":
+		var cells := _road_cells_near_center()
+		state.players[pid].pos = cells[state.order.size() % cells.size()]
+		state.order.append(pid)
+		_log("%s joins the game with %s." % [pname, crew], "big")
+		return ""
 	_log("%s joined with %s." % [pname, crew], "info")
 	return ""
 
@@ -128,6 +209,9 @@ func _start(target: int) -> String:
 	if state.players.is_empty():
 		return "Nobody has joined."
 	state.target = clampi(target, 5, 200)
+	for pid in state.players:
+		if not state.players[pid].ready:
+			_auto_create(state.players[pid])   # whatever they haven't picked or rolled yet is picked for them
 	var order: Array = state.players.keys()
 	_shuffle(order)
 	state.order = order
@@ -151,9 +235,83 @@ func set_connected(peer: int, connected: bool) -> void:
 		for pid in state.players.keys():
 			if int(state.players[pid].owner) == peer:
 				state.players.erase(pid)
-		if peer == state.room_host:
-			state.room_host = 0 if state.players.is_empty() else int(state.players.values()[0].owner)
+	if peer == state.room_host and not connected:
+		# Hand the room to someone still here, so a game can still be started or a turn skipped.
+		state.room_host = 0
+		for pid in state.players:
+			if state.players[pid].connected:
+				state.room_host = int(state.players[pid].owner)
+				break
 	state.rev = int(state.rev) + 1
+
+
+# --------------------------------------------------------------------------- character creation
+
+## The player `peer` is still creating, if any.
+func _creating(peer: int) -> Dictionary:
+	for pid in state.players:
+		var p: Dictionary = state.players[pid]
+		if int(p.owner) == peer and not p.local and not p.ready:
+			return p
+	return {}
+
+
+## Picking a character, rolling a stat (once each, then re-rolls from a small pool), or done.
+func _create_step(p: Dictionary, t: String, intent: Dictionary) -> String:
+	match t:
+		"avatar":
+			var id := str(intent.get("id", ""))
+			if not Balance.AVATARS.any(func(a): return a.id == id):
+				return "Unknown character."
+			for pid in state.players:
+				var other: Dictionary = state.players[pid]
+				if other.id != p.id and other.avatar == id:
+					return "%s already picked that one." % other.name
+			p.avatar = id
+		"roll":
+			var stat := str(intent.get("stat", ""))
+			if not Balance.ROLL_STATS.has(stat):
+				return "Unknown stat."
+			var n := int(p.rolls.get(stat, 0))
+			if n > 0:
+				if int(p.rerolls) <= 0:
+					return "No re-rolls left."
+				p.rerolls = int(p.rerolls) - 1
+			p.rolls[stat] = n + 1
+			var r: Array = Balance.ROLL_STATS[stat].range
+			var v := rng.randi_range(int(r[0]), int(r[1]))
+			if stat == "cash":
+				p.cash = v / 50 * 50
+			else:
+				p.crew[0][stat] = v
+		"ready":
+			if p.avatar == "":
+				return "Pick your character first."
+			for stat in Balance.ROLL_STATS:
+				if not p.rolls.has(stat):
+					return "Roll your %s first." % Balance.ROLL_STATS[stat].label
+			p.ready = true
+			_log("%s hits the streets." % p.name if state.phase == "playing" else "%s is ready." % p.name, "info")
+	return ""
+
+
+## Finishes a character for someone who didn't: a free avatar, and the stats they haven't rolled
+## keep the random values they were given on joining.
+func _auto_create(p: Dictionary) -> void:
+	if p.avatar == "":
+		var taken: Array = state.players.values().map(func(o): return o.avatar)
+		for a in Balance.AVATARS:
+			if not a.id in taken:
+				p.avatar = a.id
+				break
+	for stat in Balance.ROLL_STATS:
+		if not p.rolls.has(stat):
+			p.rolls[stat] = 1
+	p.ready = true
+
+
+func _anyone_ready() -> bool:
+	return state.players.values().any(func(o): return o.ready)
 
 
 # --------------------------------------------------------------------------- turns & months
@@ -170,6 +328,9 @@ func _begin_turn() -> void:
 	while guard < 50:
 		guard += 1
 		var p := _active()
+		if not p.get("ready", true) and _anyone_ready():
+			_advance_index()   # still creating their boss (joined mid-game)
+			continue
 		if int(p.jail) > 0:
 			p.jail = int(p.jail) - 1
 			if int(p.jail) == 0:
@@ -189,11 +350,18 @@ func _begin_turn() -> void:
 			continue
 		p.steps_max = Balance.CARS[int(p.car)].steps
 		p.steps = p.steps_max
+		p.half_step = false
+		p.stopped = false
 		p.gang_war_used = false
 		p.inside = -1
 		p.menu_path = []
 		_log("Month %d: %s's turn." % [state.month, p.name], "turn")
 		_refresh_menu(p)
+		if int(p.loan) > 0 and int(p.loan_months) == 1 and str(p.get("news", "")) == "":
+			p.news = "Easy Eddie's loan is due at the end of this month: $%d. Pay it at a loan shark, or the collectors take your cash, your car and then you." % p.loan
+		if str(p.get("news", "")) != "":
+			_result(p, "Easy Eddie" if p.news.begins_with("Easy Eddie's loan") else "While you were away", p.news, false)
+			p.news = ""
 		return
 
 
@@ -265,12 +433,15 @@ func _collect_loan(p: Dictionary) -> void:
 		debt = maxi(0, debt - car_value)
 		p.car = 0
 	if debt > 0:
-		var months := 1 + debt / 5000
-		p.jail = int(p.jail) + months
-		msg += ". Still short, so they handed %s to the cops (%d months)" % [p.name, months]
+		var months := mini(1 + debt / 10000, 2)
+		msg += ". Still short, so they handed %s to the cops for %d month%s. %s" % [p.name, months, "" if months == 1 else "s", _jail(p, months)]
 	p.loan = 0
 	p.loan_months = 0
-	_log(msg + ".", "bad")
+	msg = msg.strip_edges()
+	if not msg.ends_with("."):
+		msg += "."
+	_log(msg, "bad")
+	p.news = msg
 
 
 # --------------------------------------------------------------------------- movement
@@ -288,27 +459,42 @@ func _move(p: Dictionary, dir: String) -> String:
 	var city: Dictionary = state.city
 	if nx < 0 or ny < 0 or nx >= city.w or ny >= city.h:
 		return "Edge of town."
-	var cell: int = city.grid[ny * city.w + nx]
-	if cell == CityGen.ROAD:
-		p.pos = [nx, ny]
-		p.steps = int(p.steps) - 1
-		_maybe_police_check(p)
-		_after_action(p)
+	var cost := CityGen.step_cost(city, Vector2i(int(p.pos[0]), int(p.pos[1])), dir, int(p.car) > 0)
+	match cost:
+		CityGen.NEEDS_CAR:
+			return "The motorway is for cars only."
+		CityGen.ONE_WAY:
+			return "Wrong way: each motorway lane runs one way. Turn at the next exit."
+		CityGen.BLOCKED:
+			return "You can't go that way."
+	_spend_step(p, cost)
+	if city.grid[ny * city.w + nx] == CityGen.BUILDING:
+		_enter(p, _building_at(nx, ny))
 		return ""
-	if cell == CityGen.BUILDING:
-		var b := _building_at(nx, ny)
-		if b.is_empty():
-			return "Nothing there."
+	p.pos = [nx, ny]
+	_maybe_police_check(p)
+	_after_action(p)
+	return ""
+
+
+## A step costs 2 halves on the street and 1 on the motorway; half steps are banked until there are two.
+func _spend_step(p: Dictionary, halves: int) -> void:
+	if halves >= 2:
 		p.steps = int(p.steps) - 1
-		_enter(p, b)
-		return ""
-	return "You can't go that way."
+	elif p.get("half_step", false):
+		p.steps = int(p.steps) - 1
+		p.half_step = false
+	else:
+		p.half_step = true
 
 
 func _enter(p: Dictionary, b: Dictionary) -> void:
 	p.inside = int(b.id)
 	p.menu_path = []
 	_log("%s walks into %s." % [p.name, b.name], "move")
+	if _back_at_scene(p, b):
+		_after_action(p)
+		return
 	# Ransom pickup happens on arrival.
 	if not p.ransom.is_empty() and int(p.ransom.building) == int(b.id):
 		_ransom_pickup(p)
@@ -325,6 +511,9 @@ func _leave(p: Dictionary) -> void:
 func _after_action(p: Dictionary) -> void:
 	if state.phase != "playing":
 		return
+	if state.pending.is_empty():
+		state.fight = {}   # e.g. a won kidnapping fight followed by the ransom prompt
+		state.mini = {}
 	_check_win(p)
 	if state.phase != "playing":
 		return
@@ -336,18 +525,32 @@ func _after_action(p: Dictionary) -> void:
 	_refresh_menu(p)
 
 
+## A random stop while walking: at most one a turn, and never more than a few percent a step,
+## however much heat you've built up (about one turn in six for a clean Rookie, two in three at most).
 func _maybe_police_check(p: Dictionary) -> void:
-	if int(p.immunity) > 0:
+	if int(p.immunity) > 0 or p.get("stopped", false):
 		return
 	var rank := rank_of(p)
-	var chance := 0.012 + 0.005 * rank + 0.007 * int(p.heat)
+	var chance := minf(0.006 + 0.003 * rank + 0.002 * mini(int(p.heat), 15), 0.04)
 	if p.passport:
 		chance *= 0.5
 	if rng.randf() < chance:
-		var why := "A routine check."
-		if int(p.heat) >= 6:
-			why = "They have a wanted poster with your face on it."
-		_police_encounter(p, "Police checkpoint! " + why)
+		_random_stop(p)
+
+
+## A checkpoint: what they find on you decides how hard they come down; nothing on you and no
+## wanted poster (or fresh out of jail) and they let you go.
+func _random_stop(p: Dictionary) -> void:
+	p.stopped = true
+	var sev := _evidence(p)
+	if sev == 0 and (int(p.heat) < 6 or p.get("clean", false)):
+		var who := "fresh out of jail with nothing on them" if p.get("clean", false) else "nothing on them"
+		_result(p, "Police check", "The officers search %s, %s, and let them go." % [p.name, who], true)
+		return
+	var why := "They have a wanted poster with your face on it."
+	if sev > 0:
+		why = "They search you and find %s." % _evidence_text(p)
+	_police_encounter(p, "Police checkpoint! " + why, maxi(sev, 3))
 
 
 # --------------------------------------------------------------------------- building menus
@@ -385,7 +588,8 @@ func _menu_choose(p: Dictionary, id: String) -> String:
 		return ""
 	var cost: int = entry.get("steps", 0)
 	p.steps = int(p.steps) - cost
-	p.menu_path = []
+	if not id.begins_with("act:gamble:"):
+		p.menu_path = []   # (gamblers stay at their table for another hand)
 	_exec(p, id.substr(4).split(":"))
 	_after_action(p)
 	return ""
@@ -420,7 +624,9 @@ func _crime_entry(p: Dictionary, key: String) -> Dictionary:
 		ok = false
 		reason = "Not enough steps."
 	var odds := _crime_odds(p, c)
-	if ok:
+	if ok and c.has("mini"):
+		info += " · " + MINI_HINTS[c.mini]
+	elif ok:
 		info += " · %d%%" % int(round(odds * 100))
 	return _e("act:crime:" + key, c.label, info, ok, reason, c.steps)
 
@@ -462,19 +668,29 @@ func _build_menu(p: Dictionary) -> Array:
 				for i in crew_n:
 					var mem: Dictionary = p.crew[i]
 					var fits: bool = int(mem.smarts) >= int(g2.smarts) and int(mem.nerve) >= int(g2.nerve)
-					m.append(_e("act:buy_gear:%d:%d" % [gi2, i], "Give it to %s" % mem.name, "now: %s" % Balance.GEAR[int(mem.gear)].name,
-						fits and int(p.cash) >= int(g2.price), "Not smart or tough enough to handle it." if not fits else "Not enough cash.", 1))
+					var short: Array = []
+					if int(mem.smarts) < int(g2.smarts):
+						short.append("Smarts %d (has %d)" % [g2.smarts, mem.smarts])
+					if int(mem.nerve) < int(g2.nerve):
+						short.append("Nerve %d (has %d)" % [g2.nerve, mem.nerve])
+					m.append(_e("act:buy_gear:%d:%d" % [gi2, i], "Give it to %s" % mem.name,
+						"now: %s · Smarts %d, Nerve %d" % [Balance.GEAR[int(mem.gear)].name, mem.smarts, mem.nerve],
+						fits and int(p.cash) >= int(g2.price), ("Needs " + " and ".join(short) + ". Train at the gym.") if not fits else "Not enough cash.", 1))
 			elif sub == "train":
 				for i in crew_n:
 					m.append(_e("sub:train_%d" % i, "Train %s" % p.crew[i].name, _stat_line(p.crew[i])))
 			elif sub.begins_with("train_"):
 				var mi := int(sub.substr(6))
 				for s in ["muscle", "smarts", "nerve"]:
-					m.append(_e("act:train:%d:%s" % [mi, s], "Train %s" % s.capitalize(), "$600 · 2 steps", int(p.cash) >= 600 and int(p.steps) >= 2, "Not enough cash or steps.", 2))
+					m.append(_e("act:train:%d:%s" % [mi, s], "Train %s (now %d)" % [s.capitalize(), int(p.crew[mi][s])], "$600 · 2 steps · +4 to +9",
+						int(p.cash) >= 600 and int(p.steps) >= 2 and int(p.crew[mi][s]) < 99, "Maxed out." if int(p.crew[mi][s]) >= 99 else "Not enough cash or steps.", 2))
 				m.append(_e("act:train:%d:all" % mi, "Full program (all three)", "$1500 · 4 steps", int(p.cash) >= 1500 and int(p.steps) >= 4, "Not enough cash or steps.", 4))
 			else:
 				m.append(_e("sub:buy_gear", "Buy weapons", "This dealer's stock varies"))
 				m.append(_e("sub:train", "Train your crew", "Muscle, Smarts, Nerve"))
+				m.append(_e("act:practice:escape", "Practice escaping", "$150 · 1 step · four of the dealer's boys play cops", int(p.cash) >= 150, "Not enough cash.", 1))
+				m.append(_e("act:practice:catch", "Practice catching a runner", "$150 · 1 step · grab the case back", int(p.cash) >= 150, "Not enough cash.", 1))
+				m.append(_e("act:practice:sneak", "Practice sneaking past guards", "$150 · 1 step · the dealer's boys stand guard", int(p.cash) >= 150, "Not enough cash.", 1))
 		"pub":
 			if sub == "hire":
 				for ri in b.recruits.size():
@@ -489,6 +705,9 @@ func _build_menu(p: Dictionary) -> Array:
 				var hit_pay := 2000 + 1500 * rank_of(p)
 				m.append(_e("act:hit_job", "Take a hit job", "Fight bodyguards · 4 steps · $%d" % hit_pay, rank_of(p) >= 1 and int(p.steps) >= 4,
 					"Nobody trusts a Rookie with this." if rank_of(p) < 1 else "Not enough steps.", 4))
+				var case_pay := 1500 + 800 * rank_of(p)
+				m.append(_e("act:take_suitcase", "Smuggle a suitcase abroad", "Take it through airport customs · pays $%d" % case_pay,
+					p.get("suitcase", {}).is_empty(), "You're already carrying one.", 1))
 				m.append(_e("act:buy_dirt", "Buy dirt on someone", "$2000 · use it for blackmail", int(p.cash) >= 2000 and p.dirt == "",
 					"You already hold dirt." if p.dirt != "" else "Not enough cash.", 1))
 			else:
@@ -622,9 +841,15 @@ func _build_menu(p: Dictionary) -> Array:
 						int(p.cash) >= cost3, "Not enough cash.", 0))
 			else:
 				m.append(_e("sub:holiday", "Go on holiday", "Skip a month, come back stronger"))
+				m.append(_e("act:smuggle", "Smuggle the suitcase through customs", "Sneak past customs · 3 steps",
+					not p.get("suitcase", {}).is_empty(), "A bartender can give you one to carry.", 3))
 	if path.size() > 0:
 		m.append(_e("back", "Back"))
 	m.append(_e("leave", "Leave"))
+	for e in m:
+		if e.enabled and int(e.steps) > int(p.steps):
+			e.enabled = false
+			e.reason = "Not enough steps (%d)." % e.steps
 	return m
 
 
@@ -637,20 +862,20 @@ func _blackmail_entry(p: Dictionary, b: Dictionary) -> Dictionary:
 # --------------------------------------------------------------------------- crimes
 
 const CRIMES := {
-	"pickpocket": {"label": "Pick some pockets", "check": "smarts", "base": 0.55, "steps": 2, "loot": true, "fail": "police", "heat": 1},
-	"pickpocket_train": {"label": "Work the crowded trains", "check": "smarts", "base": 0.65, "steps": 3, "loot": true, "fail": "police", "heat": 1},
-	"rob_hotel": {"label": "Rob the front desk", "check": "nerve", "base": 0.5, "steps": 3, "pay": [800, 3000], "fail": "fight", "enemy": 4, "heat": 2},
-	"bank_raid": {"label": "Hold up the teller", "check": "nerve", "base": 0.45, "steps": 3, "pay": [3000, 9000], "gear": Balance.PISTOL, "fail": "fight", "enemy": 9, "heat": 4},
-	"crack_safe": {"label": "Crack the vault at night", "check": "smarts", "base": 0.35, "steps": 5, "pay": [8000, 20000], "fail": "police", "heat": 4, "rank": 1},
-	"rob_store": {"label": "Rob the store", "check": "nerve", "base": 0.55, "steps": 2, "pay": [400, 1800], "fail": "fight", "enemy": 3, "heat": 2},
-	"mail_train": {"label": "Rob the mail train", "check": "muscle", "base": 0.4, "steps": 6, "pay": [6000, 15000], "fail": "fight", "enemy": 10, "heat": 5, "rank": 2},
-	"steal_containers": {"label": "Steal shipping containers", "check": "muscle", "base": 0.5, "steps": 4, "pay": [1500, 5000], "fail": "police", "heat": 2},
-	"steal_electronics": {"label": "Clean out the electronics", "check": "smarts", "base": 0.5, "steps": 4, "goods": true, "fail": "police", "heat": 2},
-	"money_transport": {"label": "Hit the armored truck", "check": "nerve", "base": 0.4, "steps": 5, "pay": [5000, 12000], "gear": Balance.PISTOL, "fail": "fight", "enemy": 11, "heat": 5, "rank": 3},
-	"rob_pay_office": {"label": "Raid the city pay office", "check": "nerve", "base": 0.4, "steps": 4, "pay": [4000, 10000], "fail": "fight", "enemy": 8, "heat": 4, "rank": 2},
-	"kidnap_child": {"label": "Kidnap a child", "check": "smarts", "base": 0.5, "steps": 3, "hostage": "child", "value": [4000, 9000], "fail": "fight", "enemy": 3, "heat": 4, "room": true, "no_hostage": true},
-	"kidnap_villa": {"label": "Snatch the rich kid", "check": "smarts", "base": 0.4, "steps": 4, "hostage": "child", "value": [8000, 18000], "fail": "fight", "enemy": 5, "heat": 5, "room": true, "no_hostage": true, "rank": 1},
-	"kidnap_dignitary": {"label": "Snatch the visiting dignitary", "check": "smarts", "base": 0.3, "steps": 5, "hostage": "dignitary", "value": [20000, 40000], "fail": "fight", "enemy": 10, "heat": 7, "room": true, "no_hostage": true, "rank": 4},
+	"pickpocket": {"label": "Pick some pockets", "check": "smarts", "base": 0.55, "steps": 2, "loot": true, "fail": "police", "sev": 2, "heat": 1},
+	"pickpocket_train": {"label": "Work the crowded trains", "check": "smarts", "base": 0.65, "steps": 3, "loot": true, "fail": "police", "sev": 2, "heat": 1},
+	"rob_hotel": {"label": "Rob the front desk", "check": "nerve", "base": 0.5, "steps": 3, "pay": [800, 3000], "fail": "fight", "foe": "staff", "enemy": 4, "sev": 3, "heat": 2},
+	"bank_raid": {"label": "Hold up the teller", "check": "nerve", "base": 0.45, "steps": 3, "pay": [3000, 9000], "gear": Balance.PISTOL, "fail": "fight", "enemy": 9, "sev": 7, "heat": 4},
+	"crack_safe": {"label": "Crack the vault at night", "check": "smarts", "base": 0.35, "steps": 5, "pay": [8000, 20000], "fail": "police", "sev": 7, "heat": 4, "rank": 1, "mini": "safe"},
+	"rob_store": {"label": "Rob the store", "check": "nerve", "base": 0.55, "steps": 2, "pay": [400, 1800], "fail": "fight", "foe": "staff", "enemy": 3, "sev": 3, "heat": 2},
+	"mail_train": {"label": "Rob the mail train", "check": "muscle", "base": 0.4, "steps": 6, "pay": [6000, 15000], "fail": "fight", "enemy": 10, "sev": 8, "heat": 5, "rank": 2, "mini": "train"},
+	"steal_containers": {"label": "Steal shipping containers", "check": "muscle", "base": 0.5, "steps": 4, "pay": [1500, 5000], "fail": "police", "sev": 4, "heat": 2, "mini": "containers"},
+	"steal_electronics": {"label": "Clean out the electronics", "check": "smarts", "base": 0.5, "steps": 4, "goods": true, "fail": "police", "sev": 4, "heat": 2, "mini": "loot"},
+	"money_transport": {"label": "Hit the armored truck", "check": "nerve", "base": 0.4, "steps": 5, "pay": [5000, 12000], "gear": Balance.PISTOL, "fail": "fight", "enemy": 11, "sev": 8, "heat": 5, "rank": 3, "mini": "sneak"},
+	"rob_pay_office": {"label": "Raid the city pay office", "check": "nerve", "base": 0.4, "steps": 4, "pay": [4000, 10000], "fail": "fight", "enemy": 8, "sev": 6, "heat": 4, "rank": 2},
+	"kidnap_child": {"label": "Kidnap a child", "check": "smarts", "base": 0.5, "steps": 3, "hostage": "child", "value": [4000, 9000], "fail": "fight", "foe": "staff", "enemy": 3, "sev": 10, "heat": 4, "room": true, "no_hostage": true},
+	"kidnap_villa": {"label": "Snatch the rich kid", "check": "smarts", "base": 0.4, "steps": 4, "hostage": "child", "value": [8000, 18000], "fail": "fight", "foe": "bodyguard", "enemy": 5, "sev": 10, "heat": 5, "room": true, "no_hostage": true, "rank": 1},
+	"kidnap_dignitary": {"label": "Snatch the visiting dignitary", "check": "smarts", "base": 0.3, "steps": 5, "hostage": "dignitary", "value": [20000, 40000], "fail": "fight", "foe": "bodyguard", "enemy": 10, "sev": 10, "heat": 7, "room": true, "no_hostage": true, "rank": 4, "mini": "sneak"},
 }
 
 
@@ -660,24 +885,43 @@ func _crime_odds(p: Dictionary, c: Dictionary) -> float:
 	return clampf(odds, 0.05, 0.95)
 
 
+const MINI_HINTS := {"safe": "crack the dials", "train": "block the track", "containers": "push them to the truck",
+	"loot": "push the goods out", "sneak": "sneak past the guards"}
+const MINI_INTROS := {
+	"crack_safe": ["Crack the vault", "Midnight in the vault. Three dials; listen for the click that sounds different. The alarm trips in seconds."],
+	"mail_train": ["Stop the mail train", "Push containers onto the track before the mail train comes through. You need about %d."],
+	"steal_containers": ["Steal containers", "Push containers onto the marked squares by the truck, then get out through the gate before the time is up."],
+	"steal_electronics": ["Clean out the electronics", "Push the goods onto the marked squares by the back door, then get out before the time is up."],
+	"money_transport": ["Into the depot", "Get inside without being seen. The guards look ahead and to the sides, never behind."],
+	"kidnap_dignitary": ["Past the bodyguards", "Reach the guest suite without being seen. The guards look ahead and to the sides, never behind."],
+}
+
+
 func _do_crime(p: Dictionary, key: String) -> void:
 	var c: Dictionary = CRIMES[key]
 	var b: Dictionary = state.city.buildings[int(p.inside)]
+	_mark_scene(p, b)
 	p.heat = int(p.heat) + int(c.heat)
+	if c.has("mini"):
+		var game: String = c.mini
+		var intro: Array = MINI_INTROS[key]
+		if key == "steal_electronics" and b.type == "villa":
+			game = "sneak"
+			intro = ["Into the villa", "Get into the house without being seen. The guards look ahead and to the sides, never behind."]
+		var text: String = intro[1] % clampi(8 + rank_of(p) / 2, 8, 12) if key == "mail_train" else intro[1]
+		_start_mini(p, game, intro[0], text, rank_of(p), {"k": "crime", "key": key, "b": b.id})
+		return
 	if rng.randf() < _crime_odds(p, c):
 		_crime_success(p, c, b, "")
 		return
 	match str(c.fail):
 		"police":
-			_police_encounter(p, "%s went wrong. The cops are here!" % c.label)
+			_police_encounter(p, "%s went wrong. The cops are here!" % c.label, int(c.sev))
 		"fight":
 			var enemy: int = int(c.enemy) + rank_of(p)
-			var r := _fight(p, enemy, true)
-			if r.won:
-				_crime_success(p, c, b, "It turned into a shootout. %s " % r.text)
-			else:
-				_result(p, "Busted", "It turned into a shootout and %s lost. %s" % [p.name, r.text], false)
-				_arrest(p)
+			var foe: String = c.get("foe", "guard")
+			_start_fight(p, c.label, "%s went wrong. %s's people come at you." % [c.label, b.name],
+				Fight.squad(foe, enemy, rng), {"k": "crime", "key": key, "b": b.id})
 
 
 func _crime_success(p: Dictionary, c: Dictionary, b: Dictionary, prefix: String) -> void:
@@ -709,6 +953,16 @@ func _crime_success(p: Dictionary, c: Dictionary, b: Dictionary, prefix: String)
 	_result(p, c.label, text, true)
 
 
+func _protection_attempt(p: Dictionary, b: Dictionary) -> void:
+	var odds := clampf(0.45 + (_best(p, "nerve") - 40) / 120.0 + 0.04 * rank_of(p), 0.1, 0.9)
+	if rng.randf() < odds:
+		b.protector = p.id
+		_add_points(p, 1)
+		_result(p, "Protection racket", "%s now pays %s $300 every month to stay in one piece." % [b.name, p.name], true)
+	else:
+		_police_encounter(p, "The owner called the cops instead of paying.", 3)
+
+
 # --------------------------------------------------------------------------- hostages
 
 func _offer_ransom(p: Dictionary, intro: String) -> void:
@@ -720,6 +974,9 @@ func _offer_ransom(p: Dictionary, intro: String) -> void:
 	]
 	if p.hostage.kind == "child":
 		opts.append({"id": "keep", "label": "Decide later (sell at a pub)", "enabled": true})
+	if str(p.get("new_scene", "")) != "":
+		intro += " The cops will be watching %s now: don't go back." % p.new_scene
+		p.new_scene = ""
 	state.pending = {"kind": "choice", "player": p.id, "title": "Ransom demand",
 		"text": intro + " How much do you demand? The more you ask, the more likely they try to trick you.", "options": opts}
 
@@ -746,114 +1003,392 @@ func _ransom_pickup(p: Dictionary) -> void:
 		_add_points(p, 1)
 		_result(p, "Ransom collected", "The case was right where they said: $%d. The hostage goes home." % r.amount, true)
 	else:
-		var catch_odds := clampf(0.35 + (_best(p, "muscle") - 30) / 150.0 + int(p.crew[0].stamina) / 200.0, 0.1, 0.85)
-		if rng.randf() < catch_odds:
-			p.cash = int(p.cash) + int(r.amount)
-			_add_points(p, 1)
-			var t := "The %s bolted with the money case, but %s caught up. $%d collected." % ["kid" if kind == "child" else "hostage", p.name, r.amount]
-			_result(p, "Ransom collected (barely)", t, true)
-		else:
-			_result(p, "Ransom: tricked!", "The %s tore loose and ran off with the money case. %s got nothing." % ["kid" if kind == "child" else "hostage", p.name], false)
+		var who := "kid" if kind == "child" else "hostage"
+		_start_mini(p, "catch", "After them!", "The %s tore loose and ran off with the money case! Catch them within %d seconds." % [who, Chase.CATCH_SECONDS],
+			rank_of(p), {"k": "ransom", "amount": int(r.amount), "who": who})
 	p.ransom = {}
 	p.hostage = {}
 
 
 # --------------------------------------------------------------------------- police & fights
 
-func _police_encounter(p: Dictionary, text: String) -> void:
+## The police turn up. `sev` (0-10) is how bad what they caught you at is: it sets how many come,
+## how hard they are to shake off and how hard to bribe. What you carry counts too (see _evidence).
+func _police_encounter(p: Dictionary, text: String, sev: int = 3) -> void:
 	if int(p.immunity) > 0:
 		_log("The cops recognize %s and look the other way. The chief has been paid." % p.name, "info")
 		return
-	var bribe := 300 + 400 * rank_of(p)
+	sev = clampi(maxi(sev, _evidence(p)), 0, 10)
+	var bribe := 200 + 150 * sev + 300 * rank_of(p)
+	var cops := _cops(p, sev)
+	var on_foot := int(p.car) == 0
 	_cue("police_alert")
-	state.pending = {"kind": "police", "player": p.id, "title": "Police!", "text": text, "options": [
-		{"id": "bribe", "label": "Bribe them ($%d)" % bribe, "enabled": int(p.cash) >= bribe},
-		{"id": "run", "label": "Run for it", "enabled": true},
-		{"id": "fight", "label": "Shoot it out", "enabled": true},
-	], "bribe": bribe}
+	var shake: String = ["Easy", "Easy", "Easy", "Easy", "Not easy", "Not easy", "Hard", "Hard", "Very hard", "Very hard", "Very hard"][sev]
+	state.pending = {"kind": "police", "player": p.id, "title": "Police check", "text": text, "options": [
+		{"id": "run", "label": "Make a run for it", "enabled": true,
+			"info": "%s to shake them %s. If they catch you, you fight." % [shake, "on foot" if on_foot else "(you leave the car)"]},
+		{"id": "bribe", "label": "Bribe them ($%d)" % bribe, "enabled": int(p.cash) >= bribe,
+			"info": ("Usually works." if sev < 6 else "Risky for something this big.") + " They might take it and arrest you anyway." if int(p.cash) >= bribe else "You don't have $%d." % bribe},
+		{"id": "fight", "label": "Shoot it out", "enabled": true, "info": "Fight them right here."},
+	], "bribe": bribe, "cops": cops.size(), "armed": Balance.GEAR[cops[0].gear].name, "sev": sev,
+		"response": "Full response" if sev >= 8 else ("Patrol cars" if sev >= 4 else "A beat cop" if cops.size() == 1 else "Beat cops")}
+
+
+## How many officers come, and how armed, for a crime of severity `sev` (0-10): one or two for a
+## pickpocket, four or five for a robbery, a whole squad for a kidnapping.
+const COPS_BY_SEV := [1, 1, 2, 2, 3, 3, 4, 5, 6, 7, 8]
+
+
+func _cops(p: Dictionary, sev: int) -> Array:
+	sev = clampi(sev, 0, 10)
+	return Fight.squad("police", 2 + sev + rank_of(p), rng, COPS_BY_SEV[sev])
+
+
+## What the police find on you, as a severity (0 if nothing): stolen goods by how many, the
+## smuggler's suitcase, a stolen car.
+func _evidence(p: Dictionary) -> int:
+	var sev := 0
+	var goods := int(p.electronics) + int(p.radios)
+	if goods > 10:
+		sev = 10
+	elif goods > 5:
+		sev = 6
+	elif goods > 0:
+		sev = 2
+	if not p.suitcase.is_empty():
+		sev = maxi(sev, 6)
+	if p.get("car_stolen", false) and int(p.car) > 0:
+		sev = maxi(sev, 4)
+	return sev
+
+
+func _evidence_text(p: Dictionary) -> String:
+	var found: Array = []
+	var goods := int(p.electronics) + int(p.radios)
+	if goods > 0:
+		found.append("%d stolen device%s" % [goods, "" if goods == 1 else "s"])
+	if not p.suitcase.is_empty():
+		found.append("a locked suitcase")
+	if p.get("car_stolen", false) and int(p.car) > 0:
+		found.append("a stolen %s" % Balance.CARS[int(p.car)].name)
+	return " and ".join(found)
 
 
 func _police_choice(p: Dictionary, choice: String) -> void:
 	var pend: Dictionary = state.pending
 	state.pending = {}
-	var cops := 4 + 2 * rank_of(p)
+	var sev := int(pend.get("sev", 3))
+	var cops := _cops(p, sev)
 	match choice:
 		"bribe":
 			p.cash = int(p.cash) - int(pend.bribe)
-			if rng.randf() < 0.85:
+			if rng.randf() < 0.95 - 0.045 * sev:
 				_result(p, "Bribe accepted", "The officers pocket $%d and wave %s on." % [pend.bribe, p.name], true)
 			else:
-				var r := _fight(p, cops, true)
-				if r.won:
-					_result(p, "Double-crossed", "They took the money and drew their guns anyway. %s %s shot their way out." % [r.text, p.name], true)
-					p.heat = int(p.heat) + 3
-				else:
-					_result(p, "Double-crossed", "They took the money and arrested %s for bribery. %s" % [p.name, r.text], false)
-					_arrest(p)
+				_start_fight(p, "Double-crossed", "They pocket the $%d, then arrest %s for bribery. Fight or go quietly." % [pend.bribe, p.name],
+					cops, {"k": "police", "how": "double", "sev": sev})
 		"run":
-			var odds := clampf(0.3 + int(p.crew[0].stamina) / 120.0 + (_best(p, "smarts") - 40) / 300.0, 0.1, 0.8)
-			if rng.randf() < odds:
-				_result(p, "Got away", "%s ducked down an alley and lost them." % p.name, true)
-				p.heat = int(p.heat) + 1
-			else:
-				var r2 := _fight(p, cops, true)
-				if r2.won:
-					_result(p, "Cornered", "They cornered %s, who fought free. %s" % [p.name, r2.text], true)
-					p.heat = int(p.heat) + 3
-				else:
-					_result(p, "Caught", "They caught %s. %s" % [p.name, r2.text], false)
-					_arrest(p)
+			_start_mini(p, "escape", "Run for it!", "%s breaks away into the back alleys. Stay clear of the cops for %d seconds." % [p.name, Chase.ESCAPE_SECONDS],
+				sev, {"k": "police_run", "sev": sev})
 		_:
-			var r3 := _fight(p, cops, true)
-			if r3.won:
-				_result(p, "Shootout", "%s shot it out with the cops and won. %s" % [p.name, r3.text], true)
-				p.heat = int(p.heat) + 4
-			else:
-				_result(p, "Shootout lost", "%s lost the shootout. %s" % [p.name, r3.text], false)
-				_arrest(p)
+			_start_fight(p, "Shootout", "%s goes for the gun. The officers take cover." % p.name, cops, {"k": "police", "how": "shootout", "sev": sev})
 
 
-func _arrest(p: Dictionary) -> void:
+## Court and prison. Returns the sentence in months.
+func _arrest(p: Dictionary, sev: int = 0) -> String:
+	var months := 1 + rank_of(p) / 4 + (1 if sev >= 8 else 0)
+	_log("%s was sentenced to %d month%s in jail." % [p.name, months, "" if months == 1 else "s"], "bad")
+	return "The judge hands down %d month%s. %s" % [months, "" if months == 1 else "s", _jail(p, months)]
+
+
+## Locks `p` up: the car is impounded, the crew's weapons are taken and there's a fine.
+## Returns what happened, for the result text.
+func _jail(p: Dictionary, months: int) -> String:
 	_cue("jail_door")
-	var months := 1 + rank_of(p) / 4
-	p.jail = months
+	p.jail = int(p.jail) + months
 	p.heat = int(p.heat) / 2
 	p.steps = 0
 	p.inside = -1
 	p.menu_path = []
-	_log("%s was sentenced to %d month%s in jail." % [p.name, months, "" if months == 1 else "s"], "bad")
+	p.scenes = []   # time served
+	p.new_scene = ""
+	p.clean = true   # until the next crime, a stop with nothing on you ends with a wave
+	p.car_stolen = false
+	var lost: Array = []
+	if int(p.car) > 0:
+		lost.append("The %s was impounded." % Balance.CARS[int(p.car)].name)
+		p.car = 0
+	var guns: Array = []
+	for m in p.crew:
+		if int(m.gear) > 0:
+			guns.append(Balance.GEAR[int(m.gear)].name)
+			m.gear = 0
+	var goods := int(p.electronics) + int(p.radios)
+	if goods > 0 or not p.suitcase.is_empty():
+		lost.append("The stolen goods went into the evidence room.")
+		p.electronics = 0
+		p.radios = 0
+		p.suitcase = {}
+	if guns.size() > 0:
+		var listed: String = guns[-1] if guns.size() == 1 else "%s and %s" % [", ".join(guns.slice(0, -1)), guns[-1]]
+		lost.append("The cops kept the %s." % listed)
+	var fine := mini(Balance.JAIL_FINE, maxi(0, int(p.cash)))
+	p.cash = int(p.cash) - fine
+	if fine > 0:
+		lost.append("The jail took a $%d fine." % fine)
+	return " ".join(lost)
 
 
-## Auto-resolved fight. Returns {won, text}. Crew members can be killed in lethal fights.
-func _fight(p: Dictionary, enemy_power: int, lethal: bool) -> Dictionary:
-	if not "gang_war" in _cues:
-		_cue("shootout")
-	var mine := _crew_power(p)
-	var win_chance := mine / (mine + float(enemy_power))
-	var won := rng.randf() < win_chance
-	var lines: Array = []
+## Remembers a building where `p` committed a crime: walking back in later means arrest.
+func _mark_scene(p: Dictionary, b: Dictionary) -> void:
+	p.clean = false
+	if not p.scenes.has(int(b.id)):
+		p.scenes.append(int(b.id))
+		p.new_scene = b.name
+
+
+## Walking back into a building you hit: the cops are waiting. True if `p` was arrested.
+func _back_at_scene(p: Dictionary, b: Dictionary) -> bool:
+	if not p.get("scenes", []).has(int(b.id)) or int(p.immunity) > 0:
+		return false
+	_log("%s went back to %s. The cops were waiting." % [p.name, b.name], "bad")
+	var text := "The police were staking out %s, and %s walked right back in. %s" % [b.name, p.name, _arrest(p)]
+	_result(p, "Back at the scene", text, false)
+	return true
+
+
+## Opens a minigame (see Mini). `then` says what happens after.
+func _start_mini(p: Dictionary, game: String, title: String, text: String, level: int, then: Dictionary) -> void:
+	state.mini = Mini.create(game, title, level, rng, then)
+	state.minis = int(state.get("minis", 0)) + 1
+	state.mini.id = state.minis
+	if game == "safe":
+		_safe_secret = Safe.code(rng)
+	_mini_clock = 0.0
+	_log("%s: %s" % [title, text], "bad" if then.k == "police_run" else "crime")
+	var quit := "Call the train now" if game == "train" else ("Bail out" if game in ["loot", "containers", "sneak", "safe"] else "Give up")
+	state.pending = {"kind": "mini", "player": p.id, "title": title, "text": text, "options": [
+		{"id": "give_up", "label": quit, "enabled": true},
+	]}
+
+
+func _end_mini(p: Dictionary) -> void:
+	var m: Dictionary = state.mini
+	var then: Dictionary = m.then
+	var won: bool = m.won
+	state.pending = {}
+	match str(then.k):
+		"police_run":
+			if won:
+				p.heat = int(p.heat) + 1
+				_result(p, "Got away", "%s lost the cops in the back alleys." % p.name, true)
+			else:
+				var how := "%s gave up and turned around." % p.name if m.gave_up else "They cut %s off in an alley." % p.name
+				state.mini = {}
+				_start_fight(p, "Cornered", "%s No way out but through them." % how,
+					_cops(p, int(then.sev)), {"k": "police", "how": "caught", "sev": int(then.sev)})
+		"ransom":
+			if won:
+				p.cash = int(p.cash) + int(then.amount)
+				_add_points(p, 1)
+				_result(p, "Ransom collected (barely)", "%s caught up with the %s and got the case back: $%d." % [p.name, then.who, then.amount], true)
+			else:
+				_result(p, "Ransom: tricked!", "The %s got away with the money case. %s got nothing." % [then.who, p.name], false)
+		"practice":
+			_result(p, "Practice run", _practice_line(m), won)
+		"crime":
+			_crime_mini_outcome(p, m, then)
+		"smuggle":
+			p.suitcase = {}
+			if won:
+				p.cash = int(p.cash) + int(then.pay)
+				_add_points(p, 1)
+				_result(p, "Suitcase delivered", "%s slipped past customs. In the terminal a man in a grey coat takes the case and pays $%d." % [p.name, then.pay], true)
+			elif m.gave_up:
+				_result(p, "Suitcase dumped", "%s lost their nerve and dumped the case in a bin. The bartender won't be pleased." % p.name, false)
+			else:
+				_police_encounter(p, "Customs spotted %s with the suitcase and called the police!" % p.name, 6)
+	_after_action(p)
+
+
+func _practice_line(m: Dictionary) -> String:
+	var used := (int(m.total) - int(m.left)) * Mini.TICK
+	match str(m.game):
+		"escape":
+			return "You lasted the full %d seconds. The 'cops' are impressed." % Chase.ESCAPE_SECONDS if m.won else "Caught after %.1f seconds. Again?" % used
+		"catch":
+			return "Caught the runner with %.1f seconds to spare." % Mini.seconds_left(m) if m.won else "The runner got away. Again?"
+		"sneak":
+			return "Out the door in %.1f seconds and nobody saw a thing." % used if m.won else "Spotted. In a real job that's the alarm. Again?"
+	return "Done."
+
+
+## What happens after a crime's minigame (see CRIMES "mini").
+func _crime_mini_outcome(p: Dictionary, m: Dictionary, then: Dictionary) -> void:
+	var c: Dictionary = CRIMES[then.key]
+	var b: Dictionary = state.city.buildings[int(then.b)]
+	var won: bool = m.won
+	var crime_then := {"k": "crime", "key": then.key, "b": b.id}
+	var guards := Fight.squad(c.get("foe", "guard"), int(c.get("enemy", 6)) + rank_of(p), rng)
+	match str(m.game):
+		"safe":
+			if won:
+				_crime_success(p, c, b, "Click, click, click... the vault swings open. ")
+			else:
+				state.mini = {}
+				_start_fight(p, "Alarm!", "The siren goes off and the police storm the vault.",
+					_cops(p, int(c.sev)), {"k": "police", "how": "caught", "sev": int(c.sev)})
+		"train":
+			if won:
+				state.mini = {}
+				_start_fight(p, "Mail train", "The train grinds to a halt against the containers (%d hit it). The guards jump out." % int(m.train.hits),
+					guards, crime_then)
+			else:
+				_result(p, "The train got through", "Only %d container%s on the track: the mail train smashed through and was gone." % [int(m.got), "" if int(m.got) == 1 else "s"], false)
+		"containers", "loot":
+			if not won:
+				if m.gave_up:
+					_result(p, "Bailed out", "%s slipped out empty-handed." % p.name, false)
+				else:
+					_police_encounter(p, "Time's up: the police were waiting at the gate!", int(c.sev))
+			elif int(m.got) == 0:
+				_result(p, "Nothing taken", "%s got out, but nothing made it onto the truck." % p.name, false)
+			else:
+				_add_points(p, 1)
+				var mult := 1.0 + 0.15 * rank_of(p)
+				if m.game == "containers":
+					var amt := int(int(m.got) * rng.randi_range(300, 450) * mult)
+					p.cash = int(p.cash) + amt
+					_result(p, c.label, "%d container%s on the truck. The fence pays $%d." % [int(m.got), "" if int(m.got) == 1 else "s", amt], true)
+				else:
+					p.electronics = int(p.electronics) + int(m.got)
+					_result(p, c.label, "%s hauled out %d boxes of electronics. Sell them at a pub." % [p.name, int(m.got)], true)
+		"sneak":
+			match str(then.key):
+				"steal_electronics":   # a villa: in without being seen, then the looting
+					if won:
+						state.mini = {}
+						_start_mini(p, "loot", "Clean out the electronics", "You're in. Push the goods to the back door and get out before the owners wake.",
+							rank_of(p), crime_then)
+						return
+					_police_encounter(p, "A light snaps on. The owner saw you and called the police!", int(c.sev))
+				"money_transport":
+					if won:
+						state.mini = {}
+						_start_fight(p, c.label, "%s waited inside until the armored truck pulled up. Now take it from the guards." % p.name, guards, crime_then)
+					else:
+						_police_encounter(p, "A guard spotted %s and raised the alarm!" % p.name, int(c.sev))
+				_:
+					if won:
+						_crime_success(p, c, b, "Past the guards without a sound. ")
+					else:
+						state.mini = {}
+						_start_fight(p, c.label, "A guard spotted %s. The bodyguards close in." % p.name, guards, crime_then)
+
+
+## Opens the fight screen: `p`'s crew (left) against `foes` (right). `then` says what happens after.
+func _start_fight(p: Dictionary, title: String, text: String, foes: Array, then: Dictionary) -> void:
+	_cue("gang_war" if str(then.get("k", "")) in ["gang_war", "protection"] else "shootout")
+	state.fight = Fight.create(title, Fight.crew_units(p, 0), foes, then, true)
+	state.fights = int(state.get("fights", 0)) + 1
+	state.fight.id = state.fights
+	_log("%s: %s" % [title, text], "bad")
+	state.pending = {"kind": "fight", "player": p.id, "title": title, "text": text, "options": [
+		{"id": "auto", "label": "Auto-fight", "enabled": true},
+		{"id": "surrender", "label": "Give up", "enabled": true},
+	]}
+
+
+func _fight_intent(p: Dictionary, intent: Dictionary) -> String:
+	if state.fight.is_empty() or state.fight.over:
+		return "There's no fight on."
+	var err := ""
+	if intent.has("cell"):
+		var c: Array = intent.cell
+		err = Fight.act_toward(state.fight, Vector2i(int(c[0]), int(c[1])), rng)
+	else:
+		err = Fight.wait(state.fight, rng)
+	if err == "" and state.fight.over:
+		_end_fight(p)
+		_after_action(p)
+	return err
+
+
+## Writes the fight's damage back to every crew involved, then applies what the fight was about.
+func _end_fight(p: Dictionary) -> void:
+	var f: Dictionary = state.fight
+	var downed := 0
 	var killed: Array = []
-	for i in range(p.crew.size() - 1, -1, -1):
-		var m: Dictionary = p.crew[i]
-		var dmg := rng.randi_range(2, 8) if won else rng.randi_range(6, 16)
-		m.stamina = maxi(0, int(m.stamina) - dmg)
-		if int(m.stamina) == 0 and lethal and i > 0 and rng.randf() < 0.35:
-			killed.append(m.name)
-			p.crew.remove_at(i)
-	var downed := rng.randi_range(1, 3) if won else rng.randi_range(0, 1)
+	var units: Array = f.units.duplicate()
+	units.sort_custom(func(a, b): return int(a.ci) > int(b.ci))   # back to front, so removals keep indexes
+	for u in units:
+		if int(u.side) == 1 and int(u.hp) == 0:
+			downed += 1
+		if not state.players.has(int(u.owner)):
+			continue
+		var o: Dictionary = state.players[int(u.owner)]
+		var ci := int(u.ci)
+		if ci < 0 or ci >= o.crew.size():
+			continue
+		o.crew[ci].stamina = int(u.hp)
+		if int(u.hp) == 0 and f.lethal and ci > 0 and rng.randf() < 0.35:
+			killed.append(o.crew[ci].name)
+			o.crew.remove_at(ci)
+	var lines: Array = []
+	if f.surrendered:
+		lines.append("%s gave up." % p.name)
 	if downed > 0:
 		lines.append("%d of them went down." % downed)
 	if killed.size() > 0:
 		lines.append("%s didn't make it." % ", ".join(killed))
-	return {"won": won, "text": " ".join(lines)}
+	state.pending = {}
+	_fight_outcome(p, f.then, bool(f.won), " ".join(lines))
+	if state.pending.is_empty():
+		state.fight = {}   # nothing to show over the arena, so go straight back to town
 
 
-func _crew_power(p: Dictionary) -> float:
-	var total := 0.0
-	for m in p.crew:
-		var g: Dictionary = Balance.GEAR[int(m.gear)]
-		total += float(g.power) * (0.6 + int(m.muscle) / 100.0) * (0.3 + 0.7 * minf(1.0, int(m.stamina) / float(Balance.STAMINA_CAP)))
-	return maxf(total, 0.3)
+func _fight_outcome(p: Dictionary, then: Dictionary, won: bool, text: String) -> void:
+	match str(then.k):
+		"police":
+			var how: String = then.how
+			if won:
+				var titles := {"shootout": "Shootout won", "double": "Double-crossed", "caught": "Cornered"}
+				var lead := {"shootout": "%s shot it out with the cops and won." % p.name,
+					"double": "They took the money and drew their guns anyway. %s shot their way out." % p.name,
+					"caught": "They cornered %s, who fought free." % p.name}
+				p.heat = int(p.heat) + (4 if how == "shootout" else 3)
+				_result(p, titles[how], "%s %s" % [lead[how], text], true)
+			else:
+				_result(p, "Arrested", "The cops took %s in. %s %s" % [p.name, text, _arrest(p, int(then.get("sev", 0)))], false)
+		"crime":
+			var c: Dictionary = CRIMES[then.key]
+			if won:
+				_crime_success(p, c, state.city.buildings[int(then.b)], "It turned into a fight. %s " % text)
+			else:
+				_result(p, "Busted", "%s lost the fight and the cops picked up the pieces. %s %s" % [p.name, text, _arrest(p, int(c.sev))], false)
+		"hit_job":
+			if won:
+				p.cash = int(p.cash) + int(then.pay)
+				_add_points(p, 1)
+				_result(p, "Hit job done", "The target and his bodyguards are dealt with. %s collects $%d. %s" % [p.name, then.pay, text], true)
+			else:
+				_result(p, "Hit job failed", "The bodyguards were ready for %s. %s" % [p.name, text], false)
+		"protection":
+			var prot: Dictionary = state.players.get(int(then.prot), {})
+			if won:
+				_protection_attempt(p, state.city.buildings[int(then.b)])
+			else:
+				_result(p, "Turf trouble", "%s's people already run this block and they ran %s off. %s" % [prot.get("name", "Someone"), p.name, text], false)
+		"gang_war":
+			var o: Dictionary = state.players[int(then.target)]
+			var winner: Dictionary = p if won else o
+			var loser: Dictionary = o if won else p
+			var loot := int(loser.cash) / 4
+			loser.cash = int(loser.cash) - loot
+			winner.cash = int(winner.cash) + loot
+			_add_points(winner, 1)
+			_result(p, "Gang war!", "%s's crew took on %s's crew. %s won and took $%d. %s" % [p.crew_name, o.crew_name, winner.name, loot, text], won)
+			_check_win(o)
 
 
 func _gang_war(p: Dictionary, target: int) -> String:
@@ -868,21 +1403,8 @@ func _gang_war(p: Dictionary, target: int) -> String:
 		return "Not enough steps (3)."
 	p.steps = int(p.steps) - 3
 	p.gang_war_used = true
-	_cue("gang_war")
-	var mine := _crew_power(p)
-	var theirs := _crew_power(o)
-	var won := rng.randf() < mine / (mine + theirs)
-	var winner: Dictionary = p if won else o
-	var loser: Dictionary = o if won else p
-	var loot := int(loser.cash) / 4
-	loser.cash = int(loser.cash) - loot
-	winner.cash = int(winner.cash) + loot
-	var r_w := _fight(winner, 1, true)
-	var r_l := _fight(loser, 99, true)
-	_add_points(winner, 1)
-	var text := "%s's crew attacked %s's crew. %s won and took $%d. %s %s" % [p.crew_name, o.crew_name, winner.name, loot, r_w.text, r_l.text]
-	_result(p, "Gang war!", text.strip_edges(), won)
-	_check_win(o)
+	_start_fight(p, "Gang war", "%s's crew jumps %s's crew. The winner takes a quarter of the loser's cash." % [p.crew_name, o.crew_name],
+		Fight.crew_units(o, 1), {"k": "gang_war", "target": o.id})
 	_after_action(p)
 	return ""
 
@@ -899,32 +1421,41 @@ func _exec(p: Dictionary, a: PackedStringArray) -> void:
 			var price: int = maxi(0, int(Balance.CARS[ci].price) - int(Balance.CARS[int(p.car)].price) / 2)
 			p.cash = int(p.cash) - price
 			p.car = ci
+			p.car_stolen = false
 			_result(p, "New wheels", "%s drives off in a %s (%d steps per turn)." % [p.name, Balance.CARS[ci].name, Balance.CARS[ci].steps], true)
 		"steal_car":
 			var ci2 := int(a[1])
 			var odds := clampf(0.7 - 0.05 * ci2 + (_best(p, "smarts") - 40) / 150.0, 0.08, 0.9)
 			p.heat = int(p.heat) + 2
+			_mark_scene(p, b)
 			if rng.randf() < odds:
 				p.car = ci2
+				p.car_stolen = true
 				_add_points(p, 1)
 				_result(p, "Car stolen", "%s hot-wired a %s and peeled out of the lot." % [p.name, Balance.CARS[ci2].name], true)
 			else:
-				_police_encounter(p, "The alarm on the %s went off. The cops are here!" % Balance.CARS[ci2].name)
+				_police_encounter(p, "The alarm on the %s went off. The cops are here!" % Balance.CARS[ci2].name, 3 + ci2 / 3)
 		"buy_gear":
 			var gi := int(a[1])
 			var mem: Dictionary = p.crew[int(a[2])]
 			p.cash = int(p.cash) - int(Balance.GEAR[gi].price)
 			mem.gear = gi
 			_result(p, "Armed up", "%s now carries a %s." % [mem.name, Balance.GEAR[gi].name], true)
+		"practice":
+			p.cash = int(p.cash) - 150
+			var texts := {"escape": "Four of the dealer's boys in borrowed uniforms. Stay clear for %d seconds." % Chase.ESCAPE_SECONDS,
+				"catch": "One of the dealer's boys grabs a case and runs. Catch him within %d seconds." % Chase.CATCH_SECONDS,
+				"sneak": "The back warehouse, with the dealer's boys on patrol. Reach the door without being seen."}
+			_start_mini(p, a[1], "Practice: " + a[1], texts[a[1]], 0, {"k": "practice"})
 		"train":
 			var mem2: Dictionary = p.crew[int(a[1])]
 			var stats: Array = ["muscle", "smarts", "nerve"] if a[2] == "all" else [a[2]]
 			p.cash = int(p.cash) - (1500 if a[2] == "all" else 600)
 			var parts: Array = []
 			for s in stats:
-				var gain := rng.randi_range(4, 9)
-				mem2[s] = mini(99, int(mem2[s]) + gain)
-				parts.append("%s +%d" % [s.capitalize(), gain])
+				var before := int(mem2[s])
+				mem2[s] = mini(99, before + rng.randi_range(4, 9))
+				parts.append("%s %d → %d" % [s.capitalize(), before, mem2[s]])
 			_result(p, "Training done", "%s: %s." % [mem2.name, ", ".join(parts)], true)
 		"hire":
 			var r: Dictionary = b.recruits[int(a[1])]
@@ -948,20 +1479,24 @@ func _exec(p: Dictionary, a: PackedStringArray) -> void:
 			_result(p, "Hot radios", "5 car radios, no questions asked. Pubs pay $200–$320 each.", true)
 		"hit_job":
 			var pay := 2000 + 1500 * rank_of(p)
-			var r2 := _fight(p, 4 + 2 * rank_of(p), true)
 			p.heat = int(p.heat) + 3
-			if r2.won:
-				p.cash = int(p.cash) + pay
-				_add_points(p, 1)
-				_result(p, "Hit job done", "The target and his bodyguards are dealt with. %s collects $%d. %s" % [p.name, pay, r2.text], true)
-			else:
-				_result(p, "Hit job failed", "The bodyguards were ready for %s. %s" % [p.name, r2.text], false)
+			_start_fight(p, "Hit job", "The target steps out with his bodyguards. Pay on delivery: $%d." % pay,
+				Fight.squad("bodyguard", 4 + 2 * rank_of(p), rng), {"k": "hit_job", "pay": pay})
+		"take_suitcase":
+			p.suitcase = {"pay": 1500 + 800 * rank_of(p)}
+			_result(p, "A heavy suitcase", "The bartender hands over a locked suitcase. Get it through customs at the airport and someone will pay $%d. Don't open it." % p.suitcase.pay, true)
+		"smuggle":
+			p.heat = int(p.heat) + 1
+			_mark_scene(p, b)
+			_start_mini(p, "sneak", "Customs", "Get the suitcase through the customs hall without an officer seeing you.",
+				rank_of(p), {"k": "smuggle", "pay": int(p.suitcase.pay)})
 		"buy_dirt":
 			p.cash = int(p.cash) - 2000
 			p.dirt = BLACKMAIL_TYPES[rng.randi() % BLACKMAIL_TYPES.size()]
 			_result(p, "Dirt bought", "The bartender slides over an envelope: photos of the boss of a %s. Pay them a visit." % Balance.BUILDINGS[p.dirt].label.to_lower(), true)
 		"blackmail":
 			p.dirt = ""
+			_mark_scene(p, b)
 			if rng.randf() < 0.7:
 				var amt := rng.randi_range(3000, 9000) + 1000 * rank_of(p)
 				p.cash = int(p.cash) + amt
@@ -1000,6 +1535,7 @@ func _exec(p: Dictionary, a: PackedStringArray) -> void:
 			p.inside = int(dest.id)
 			p.menu_path = []
 			_log("%s rode across town to %s." % [p.name, dest.name], "move")
+			_back_at_scene(p, dest)
 		"bribe_chief":
 			var months2 := int(a[1])
 			var cost := (2000 + 1000 * rank_of(p)) * months2
@@ -1013,33 +1549,44 @@ func _exec(p: Dictionary, a: PackedStringArray) -> void:
 			o.jail = 0
 			_result(p, "Jailbreak, legally", "%s paid $%d and %s walks free. Don't forget who did that." % [p.name, bail, o.name], true)
 		"gamble":
+			# Played for real (see Casino); the deal rides along in the result so the table can show it.
 			var game := a[1]
 			var stake := int(a[2])
-			var table := {"blackjack": [0.46, 2], "poker": [0.31, 3], "roulette": [0.15, 6]}
-			var odds2: float = float(table[game][0]) + (_best(p, "smarts") - 50) / 1000.0
-			if rng.randf() < odds2:
-				var won_amt: int = stake * (int(table[game][1]) - 1)
+			var won := rng.randf() < Casino.win_chance(game, _best(p, "smarts"))
+			var show := Casino.deal(game, won, rng)
+			var how := ""
+			match game:
+				"blackjack":
+					how = "%d against the dealer's %d. " % [show.you_total, show.house_total]
+					if int(show.you_total) > 21:
+						how = "Bust with %d. " % show.you_total
+					elif int(show.house_total) > 21:
+						how = "The dealer busts with %d. " % show.house_total
+				"poker":
+					how = "%s against the house's %s. " % [show.you_hand, show.house_hand]
+				"roulette":
+					how = "%d %s. " % [show.number, show.color] + ("Right in your line! " if won else "Your line was %d-%d. " % [show.line, int(show.line) + 5])
+			if won:
+				var won_amt: int = stake * (int(Casino.TABLES[game][1]) - 1)
 				p.cash = int(p.cash) + won_amt
 				_cue("gamble_win")
-				_result(p, game.capitalize(), "%s wins $%d!" % [p.name, won_amt], true)
+				_result(p, game.capitalize(), "%s%s wins $%d!" % [how, p.name, won_amt], true)
 			else:
 				p.cash = int(p.cash) - stake
 				_cue("gamble_lose")
-				_result(p, game.capitalize(), "The house wins. %s loses $%d." % [p.name, stake], false)
+				_result(p, game.capitalize(), "%sThe house wins. %s loses $%d." % [how, p.name, stake], false)
+			state.hands = int(state.get("hands", 0)) + 1
+			show.n = state.hands
+			state.pending.show = show
 		"protection":
 			var prot := int(b.get("protector", 0))
-			var odds3 := clampf(0.45 + (_best(p, "nerve") - 40) / 120.0 + 0.04 * rank_of(p), 0.1, 0.9)
-			if prot > 0 and state.players.has(prot):
-				var r3 := _fight(p, int(_crew_power(state.players[prot])) + 2, true)
-				if not r3.won:
-					_result(p, "Turf trouble", "%s's people already run this block and they ran %s off. %s" % [state.players[prot].name, p.name, r3.text], false)
-					return
-			if rng.randf() < odds3:
-				b.protector = p.id
-				_add_points(p, 1)
-				_result(p, "Protection racket", "%s now pays %s $300 every month to stay in one piece." % [b.name, p.name], true)
-			else:
-				_police_encounter(p, "The owner called the cops instead of paying.")
+			if prot > 0 and prot != int(p.id) and state.players.has(prot):
+				var rival: Dictionary = state.players[prot]
+				_start_fight(p, "Turf war", "%s's people already run %s, and they don't share." % [rival.name, b.name],
+					Fight.crew_units(rival, 1), {"k": "protection", "prot": prot, "b": b.id})
+				return
+			_mark_scene(p, b)
+			_protection_attempt(p, b)
 		"beg":
 			if rng.randf() < 0.3:
 				_result(p, "Thrown out", "The manager threw %s out of %s. Humiliating." % [p.name, b.name], false)
@@ -1088,8 +1635,21 @@ func _pending_choose(p: Dictionary, id: String) -> String:
 	match str(pend.kind):
 		"result":
 			state.pending = {}
+			state.fight = {}
+			state.mini = {}
 		"police":
 			_police_choice(p, id)
+		"mini":
+			Mini.give_up(state.mini)
+			if state.mini.over:
+				_end_mini(p)
+			return ""
+		"fight":
+			if id == "auto":
+				Fight.auto(state.fight, rng)
+			else:
+				Fight.surrender(state.fight)
+			_end_fight(p)
 		"choice":
 			state.pending = {}
 			if id.begins_with("ransom:"):
@@ -1100,6 +1660,9 @@ func _pending_choose(p: Dictionary, id: String) -> String:
 
 
 func _result(p: Dictionary, title: String, text: String, good: bool) -> void:
+	if str(p.get("new_scene", "")) != "":
+		text += " The cops will be watching %s now: don't go back." % p.new_scene
+		p.new_scene = ""
 	text = text.strip_edges().replace("  ", " ")
 	if _cues.is_empty():
 		_cue("success" if good else "fail")
@@ -1110,10 +1673,16 @@ func _result(p: Dictionary, title: String, text: String, good: bool) -> void:
 
 # --------------------------------------------------------------------------- helpers
 
-## Queue a music sting for every client (see scripts/audio/music.gd for the names).
+## Queue a music sting for every client (names: see STING_FILES in scripts/audio/music.gd).
 func _cue(name: String) -> void:
 	if not name in _cues:
 		_cues.append(name)
+
+
+func _flush_cues() -> void:
+	if _cues.size() > 0:
+		state.cue = {"n": int(state.get("cue", {}).get("n", 0)) + 1, "names": _cues.duplicate()}
+	_cues = []
 
 
 func rank_of(p: Dictionary) -> int:
@@ -1134,6 +1703,8 @@ func _check_win(p: Dictionary) -> void:
 		state.phase = "over"
 		state.winner = p.id
 		state.pending = {}
+		state.fight = {}
+		state.mini = {}
 		_log("%s is the new Boss of Caper City!" % p.name, "big")
 
 
@@ -1218,21 +1789,11 @@ func _shuffle(a: Array) -> void:
 
 
 func _building_at(x: int, y: int) -> Dictionary:
-	for b in state.city.buildings:
-		if x >= int(b.x) and x < int(b.x) + int(b.w) and y >= int(b.y) and y < int(b.y) + int(b.h):
-			return b
-	return {}
+	return CityGen.building_at(state.city, x, y)
 
 
 func _entrance(b: Dictionary) -> Array:
-	var city: Dictionary = state.city
-	for dy in range(-1, int(b.h) + 1):
-		for dx in range(-1, int(b.w) + 1):
-			var x: int = int(b.x) + dx
-			var y: int = int(b.y) + dy
-			if x >= 0 and y >= 0 and x < city.w and y < city.h and city.grid[y * city.w + x] == CityGen.ROAD:
-				return [x, y]
-	return [int(b.x), int(b.y)]
+	return CityGen.entrance(state.city, b)
 
 
 func _road_cells_near_center() -> Array:
@@ -1245,7 +1806,8 @@ func _road_cells_near_center() -> Array:
 			for dx in range(-r, r + 1):
 				var x := cx + dx
 				var y := cy + dy
-				if x >= 0 and y >= 0 and x < city.w and y < city.h and city.grid[y * city.w + x] == CityGen.ROAD and not cells.has([x, y]):
+				if x >= 0 and y >= 0 and x < city.w and y < city.h and city.grid[y * city.w + x] == CityGen.ROAD \
+						and not CityGen.is_motorway(city.roads[y * city.w + x]) and not cells.has([x, y]):
 					cells.append([x, y])
 		if cells.size() >= 6:
 			break

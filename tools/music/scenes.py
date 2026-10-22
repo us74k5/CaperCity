@@ -535,12 +535,86 @@ def victory():
     return tr.master(-16)
 
 
+def fight():
+    """Turn-based shootouts and gang wars: driving, aggressive, D minor."""
+    tr = Track(140, 8, seed=34)
+    roots = [38, 38, 41, 36, 38, 38, 43, 45]
+    for bar, r in enumerate(roots):
+        b0 = bar * 4
+        for i in range(4):
+            tr.add(kick(1.2), b0 + i, 0, 0.65)
+        tr.add(snare(), b0 + 1, 0.05, 0.6)
+        tr.add(snare(), b0 + 3, 0.05, 0.6)
+        for i in range(8):
+            tr.add(hat(open_=(i % 4 == 3), dur=0.12 if i % 4 == 3 else None), b0 + i * 0.5 + 0.25 * (i % 2 == 0) * 0, 0.4, 0.5)
+        for i in range(8):
+            iv = 12 if i in (3, 6) else 0
+            tr.add(bass_saw(midi(r - 12 + iv), tr.beat * 0.45, 1.6), b0 + i * 0.5, 0, 0.36)
+        if bar % 2 == 1:
+            tr.chord(brass, [r + 24, r + 27, r + 31], b0 + 2.5, 0.35, 0.14, 0.4)
+            tr.chord(brass, [r + 24, r + 27, r + 31], b0 + 3.0, 0.8, 0.14, 0.4)
+        if bar % 4 == 3:
+            for i in range(6):
+                tr.add(tom(160 - i * 14, 0.4), b0 + 2.5 + i * 0.25, -0.5 + i * 0.2, 0.5)
+    tr.add(cymbal(), 0, 0.3, 0.5)
+    tr.add(cymbal(), 16, -0.3, 0.45)
+    for bar in range(8):
+        tr.add(strings([midi(roots[bar] + 12), midi(roots[bar] + 15), midi(roots[bar] + 19)], 4 * tr.beat, 3000, 0.05), bar * 4, 0, 0.1)
+    return tr.master(-15.5)
+
+
+def chase():
+    """Running from the cops / chasing the runner: fast pulse and a siren."""
+    tr = Track(152, 8, seed=35)
+    roots = [40, 40, 43, 45, 40, 40, 47, 45]
+    for bar, r in enumerate(roots):
+        b0 = bar * 4
+        for i in range(16):
+            tr.add(bass_saw(midi(r - 12 + (7 if i % 8 == 6 else 0)), tr.beat * 0.2, 1.3), b0 + i * 0.25, 0, 0.32)
+            tr.add(hat(dur=0.04), b0 + i * 0.25, 0.45 if i % 2 else 0.25, 0.4 if i % 4 else 0.6)
+        tr.add(kick(1.1), b0, 0, 0.6)
+        tr.add(kick(1.1), b0 + 1.5, 0, 0.5)
+        tr.add(kick(1.1), b0 + 2, 0, 0.6)
+        tr.add(snare(), b0 + 1, 0.05, 0.55)
+        tr.add(snare(), b0 + 3, 0.05, 0.55)
+        tr.add(snare(), b0 + 3.75, 0.05, 0.3)
+        for i in range(8):
+            n = r + 24 + [0, 3, 7, 10, 12, 10, 7, 3][i]
+            tr.add(strings([midi(n)], tr.beat * 0.4, 3600, 0.01), b0 + i * 0.5, -0.3 + 0.08 * i, 0.12)
+    tr.add(siren(tr.n / SR, "yelp", 700, 1400), 0, -0.5, 0.18)
+    return tr.master(-15.5)
+
+
+def heist():
+    """Safe cracking, sneaking past guards, pushing loot: quiet tension, C minor."""
+    tr = Track(96, 8, seed=36)
+    prog = [ch(48, "m"), ch(48, "m"), ch(44, "maj"), ch(43, "7")] * 2
+    for bar, c in enumerate(prog):
+        b0 = bar * 4
+        tr.add(pad([midi(n) for n in c], 4 * tr.beat + 0.4, 700, 1.0), b0, 0, 0.16)
+        tr.add(kick(0.5), b0, 0, 0.45)
+        tr.add(kick(0.5), b0 + 0.4, 0, 0.3)   # heartbeat
+        tr.add(kick(0.5), b0 + 2, 0, 0.4)
+        tr.add(kick(0.5), b0 + 2.4, 0, 0.25)
+        for i in range(8):
+            tr.add(clock_tick(), b0 + i * 0.5, -0.5 if i % 2 else 0.5, 0.14)
+        tr.add(bass_upright(midi(c[0] - 12), tr.beat * 1.8), b0, 0, 0.45)
+        tr.add(bass_upright(midi(c[0] - 5), tr.beat * 0.9), b0 + 3, 0, 0.3)
+    motif = [(0, 0.5, 72), (0.75, 0.25, 74), (1, 0.5, 75), (2, 0.5, 74), (3, 0.5, 71)]
+    for rep in range(4):
+        melody(tr, [(p0, d, n - (3 if rep % 2 else 0)) for p0, d, n in motif],
+               lambda f, d: pluck(f, d + 0.1, 0.97, 0.6), 0.22, 0.3, offset=rep * 8)
+    sprinkle(tr, lambda: bell(midi(96), 0.6, 1.41, 2.0), 3, 0.08)
+    return tr.master(-18.5, 0.3, air=0.05)
+
+
 LOOPS = {
     "menu": menu, "lobby": lobby, "bank": bank, "hotel": hotel, "casino": casino, "pub": pub, "arms": arms,
     "car_dealer": car_dealer, "print_shop": print_shop, "subway": subway, "police": police, "station": station,
     "playground": playground, "supermarket": supermarket, "harbor": harbor, "loan_shark": loan_shark,
     "dept_store": dept_store, "villa": villa, "city_hall": city_hall, "airport": airport,
     "police_standoff": police_standoff, "jail": jail, "victory": victory,
+    "fight": fight, "chase": chase, "heist": heist,
 }
 
 
