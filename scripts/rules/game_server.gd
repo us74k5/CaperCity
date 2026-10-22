@@ -11,6 +11,7 @@ const BLACKMAIL_TYPES := ["car_dealer", "casino", "bank", "dept_store", "villa",
 
 var state: Dictionary = {}
 var rng := RandomNumberGenerator.new()
+var _cues: Array = []   # sound cues raised while handling the current intent
 
 
 func _init(seed_value: int = 0) -> void:
@@ -21,7 +22,7 @@ func _init(seed_value: int = 0) -> void:
 		"phase": "lobby", "seed": seed_value, "month": 1, "target": 35,
 		"players": {}, "order": [], "active": 0, "next_pid": 1,
 		"room_host": 0, "city": CityGen.generate(seed_value),
-		"log": [], "pending": {}, "winner": 0, "rev": 0,
+		"log": [], "pending": {}, "winner": 0, "rev": 0, "cue": {"n": 0, "names": []},
 	}
 	_init_buildings()
 
@@ -32,6 +33,7 @@ func _init(seed_value: int = 0) -> void:
 func handle(peer: int, intent: Dictionary) -> String:
 	var t: String = str(intent.get("t", ""))
 	var err := ""
+	_cues = []
 	match t:
 		"join":
 			err = _join(peer, str(intent.get("name", "")), str(intent.get("crew", "")), false)
@@ -57,6 +59,8 @@ func handle(peer: int, intent: Dictionary) -> String:
 			if int(p.owner) != peer:
 				return "It's not your turn."
 			err = _handle_turn(p, t, intent)
+	if _cues.size() > 0:
+		state.cue = {"n": int(state.cue.n) + 1, "names": _cues.duplicate()}
 	state.rev = int(state.rev) + 1
 	return err
 
@@ -214,6 +218,7 @@ func _end_turn() -> void:
 
 func _end_month() -> void:
 	state.month = int(state.month) + 1
+	_cue("month")
 	_log("— Month %d begins —" % state.month, "big")
 	for pid in state.order:
 		var p: Dictionary = state.players[pid]
@@ -694,6 +699,7 @@ func _crime_success(p: Dictionary, c: Dictionary, b: Dictionary, prefix: String)
 		var value := rng.randi_range(int(c.value[0]), int(c.value[1]))
 		var who := "a child from %s" % b.name if c.hostage == "child" else "the visiting dignitary"
 		p.hostage = {"kind": c.hostage, "value": value, "from": b.name}
+		_cue("kidnap")
 		text += "%s grabbed %s and stashed them in the hotel room." % [p.name, who]
 		_add_points(p, 1)
 		_log("%s: %s" % [c.label, text], "crime")
@@ -736,6 +742,7 @@ func _ransom_pickup(p: Dictionary) -> void:
 	var kind: String = p.hostage.get("kind", "child")
 	if rng.randf() < float(r.chance):
 		p.cash = int(p.cash) + int(r.amount)
+		_cue("cash")
 		_add_points(p, 1)
 		_result(p, "Ransom collected", "The case was right where they said: $%d. The hostage goes home." % r.amount, true)
 	else:
@@ -758,6 +765,7 @@ func _police_encounter(p: Dictionary, text: String) -> void:
 		_log("The cops recognize %s and look the other way. The chief has been paid." % p.name, "info")
 		return
 	var bribe := 300 + 400 * rank_of(p)
+	_cue("police_alert")
 	state.pending = {"kind": "police", "player": p.id, "title": "Police!", "text": text, "options": [
 		{"id": "bribe", "label": "Bribe them ($%d)" % bribe, "enabled": int(p.cash) >= bribe},
 		{"id": "run", "label": "Run for it", "enabled": true},
@@ -806,6 +814,7 @@ func _police_choice(p: Dictionary, choice: String) -> void:
 
 
 func _arrest(p: Dictionary) -> void:
+	_cue("jail_door")
 	var months := 1 + rank_of(p) / 4
 	p.jail = months
 	p.heat = int(p.heat) / 2
@@ -817,6 +826,8 @@ func _arrest(p: Dictionary) -> void:
 
 ## Auto-resolved fight. Returns {won, text}. Crew members can be killed in lethal fights.
 func _fight(p: Dictionary, enemy_power: int, lethal: bool) -> Dictionary:
+	if not "gang_war" in _cues:
+		_cue("shootout")
 	var mine := _crew_power(p)
 	var win_chance := mine / (mine + float(enemy_power))
 	var won := rng.randf() < win_chance
@@ -857,6 +868,7 @@ func _gang_war(p: Dictionary, target: int) -> String:
 		return "Not enough steps (3)."
 	p.steps = int(p.steps) - 3
 	p.gang_war_used = true
+	_cue("gang_war")
 	var mine := _crew_power(p)
 	var theirs := _crew_power(o)
 	var won := rng.randf() < mine / (mine + theirs)
@@ -953,6 +965,7 @@ func _exec(p: Dictionary, a: PackedStringArray) -> void:
 			if rng.randf() < 0.7:
 				var amt := rng.randi_range(3000, 9000) + 1000 * rank_of(p)
 				p.cash = int(p.cash) + amt
+				_cue("cash")
 				_add_points(p, 1)
 				_result(p, "Blackmail", "The boss of %s turns pale and pays $%d to make it go away." % [b.name, amt], true)
 			else:
@@ -1007,9 +1020,11 @@ func _exec(p: Dictionary, a: PackedStringArray) -> void:
 			if rng.randf() < odds2:
 				var won_amt: int = stake * (int(table[game][1]) - 1)
 				p.cash = int(p.cash) + won_amt
+				_cue("gamble_win")
 				_result(p, game.capitalize(), "%s wins $%d!" % [p.name, won_amt], true)
 			else:
 				p.cash = int(p.cash) - stake
+				_cue("gamble_lose")
 				_result(p, game.capitalize(), "The house wins. %s loses $%d." % [p.name, stake], false)
 		"protection":
 			var prot := int(b.get("protector", 0))
@@ -1051,6 +1066,7 @@ func _exec(p: Dictionary, a: PackedStringArray) -> void:
 			p.cash = int(p.cash) - int(h.cost) * p.crew.size()
 			p.holiday = 1
 			p.holiday_boost = h.boost
+			_cue("holiday")
 			_log("%s and crew flew off to %s." % [p.name, h.name], "info")
 			p.steps = 0
 
@@ -1085,12 +1101,20 @@ func _pending_choose(p: Dictionary, id: String) -> String:
 
 func _result(p: Dictionary, title: String, text: String, good: bool) -> void:
 	text = text.strip_edges().replace("  ", " ")
+	if _cues.is_empty():
+		_cue("success" if good else "fail")
 	_log("%s: %s" % [title, text], "good" if good else "bad")
 	state.pending = {"kind": "result", "player": p.id, "title": title, "text": text, "good": good,
 		"options": [{"id": "ok", "label": "OK", "enabled": true}]}
 
 
 # --------------------------------------------------------------------------- helpers
+
+## Queue a music sting for every client (see scripts/audio/music.gd for the names).
+func _cue(name: String) -> void:
+	if not name in _cues:
+		_cues.append(name)
+
 
 func rank_of(p: Dictionary) -> int:
 	return mini(8, int(p.points) * 9 / maxi(1, int(state.target)))
@@ -1101,6 +1125,7 @@ func _add_points(p: Dictionary, n: int) -> void:
 	p.points = int(p.points) + n
 	var after := rank_of(p)
 	if after > before:
+		_cue("rank_up")
 		_log("%s is now a %s!" % [p.name, Balance.RANKS[after]], "big")
 
 
