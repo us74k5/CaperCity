@@ -1244,7 +1244,7 @@ static func impound_fee(ci: int) -> int:
 	return 300 + int(Balance.CARS[ci].price) / 4
 
 
-## A month in jail: the bathroom escape (see Jailbreak), which never quite works.
+## A month in jail: the showers (see Shower). Nobody keeps hold of the soap.
 func _jail_turn(p: Dictionary) -> void:
 	p.in_cell = true
 	p.steps = 0
@@ -1253,21 +1253,19 @@ func _jail_turn(p: Dictionary) -> void:
 	p.menu_path = []
 	p.menu = []
 	_log("Month %d: %s's turn, in jail (%s)." % [state.month, p.name, "last month" if int(p.jail) == 0 else "%d more" % p.jail], "turn")
-	_start_mini(p, "jailbreak", "Jailbreak", "Lights out in the prison bathroom. The vent on the far wall is loose... Get to it and pry it open before the guards come round.",
-		0, {"k": "jailbreak"})
+	_start_mini(p, "shower", "Shower time", "Shower time in the cell block. Whatever happens, don't drop the soap.",
+		0, {"k": "shower"})
 
 
-## First turn out of jail: weak from the cell, and in a wheelchair for as many turns as the sentence.
+## First turn out of jail: in a wheelchair for as many turns as the sentence.
 func _release(p: Dictionary) -> void:
 	var served := int(p.get("jail_served", 0))
 	if served <= 0:
 		return
 	p.jail_served = 0
-	var boss: Dictionary = p.crew[0]
-	boss.stamina = maxi(1, int(boss.stamina) - Balance.RELEASE_STAMINA)
 	p.wheelchair = maxi(int(p.get("wheelchair", 0)), served)
-	var line := "%s is out after %d month%s inside: %d less energy, and in a wheelchair for %d turn%s." % [
-		p.name, served, "" if served == 1 else "s", Balance.RELEASE_STAMINA, served, "" if served == 1 else "s"]
+	var line := "%s is out after %d month%s inside, and in a wheelchair for %d turn%s." % [
+		p.name, served, "" if served == 1 else "s", served, "" if served == 1 else "s"]
 	_log(line, "info")
 	p.news = (str(p.news) + " " + line).strip_edges()
 
@@ -1281,7 +1279,7 @@ func _start_mini(p: Dictionary, game: String, title: String, text: String, level
 		_safe_secret = Safe.code(rng)
 	_mini_clock = 0.0
 	_log("%s: %s" % [title, text], "bad" if then.k == "police_run" else "crime")
-	var quit := "Call the train now" if game == "train" else ("Bail out" if game in ["loot", "containers", "sneak", "safe"] else ("Back to the cell" if game == "jailbreak" else "Give up"))
+	var quit := "Call the train now" if game == "train" else ("Bail out" if game in ["loot", "containers", "sneak", "safe"] else ("Let it go" if game == "shower" else "Give up"))
 	state.pending = {"kind": "mini", "player": p.id, "title": title, "text": text, "options": [
 		{"id": "give_up", "label": quit, "enabled": true},
 	]}
@@ -1311,12 +1309,12 @@ func _end_mini(p: Dictionary) -> void:
 				_result(p, "Ransom: tricked!", "The %s got away with the money case. %s got nothing." % [then.who, p.name], false)
 		"practice":
 			_result(p, "Practice run", _practice_line(m), won)
-		"jailbreak":
-			var pct := int(100.0 * int(m.dig) / maxf(1.0, float(m.dig_max)))
+		"shower":
+			var boss: Dictionary = p.crew[0]
+			boss.stamina = maxi(1, int(boss.stamina) - Balance.SHOWER_STAMINA)
 			var left := "That was the last month." if int(p.jail) == 0 else "%d more month%s to go." % [p.jail, "" if p.jail == 1 else "s"]
-			var how := "%s gave up and went back to the cell." % p.name if m.gave_up else \
-				"The vent was %d%% off when the guard grabbed %s by the collar. Big Lou laughed so hard he lost his shorts." % [pct, p.name]
-			_result(p, "Back to the cell", "%s %s" % [how, left], false)
+			var how := "%s just let it go." % p.name if m.gave_up else "%s held on for %.1f seconds, then the soap shot out and hit the tiles." % [p.name, float(m.held)]
+			_result(p, "Dropped the soap", "%s Bubba saw. %d less energy. %s" % [how, Balance.SHOWER_STAMINA, left], false)
 		"crime":
 			_crime_mini_outcome(p, m, then)
 		"smuggle":

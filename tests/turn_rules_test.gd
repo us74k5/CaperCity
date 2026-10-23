@@ -1,6 +1,6 @@
 extends SceneTree
 ## Turn rules: the police reset every turn, the impound lot, a crew fighting a stakeout, jail turns
-## played as the bathroom jailbreak (which never works), the wheelchair after jail, Easy Eddie's
+## played as the showers (nobody keeps hold of the soap), the wheelchair after jail, Easy Eddie's
 ## gang for an unpaid loan, casino payouts and the runaway kid's speed.
 ## Run: godot --headless --path . --script res://tests/turn_rules_test.gd
 
@@ -113,36 +113,51 @@ func _jail_turns() -> void:
 	ana.car = 4
 	ana.car_stolen = false
 	_to_turn(1)
-	_check(gs.state.pending.get("kind", "") == "mini" and gs.state.mini.game == "jailbreak", "a jail month is the jailbreak, not a skipped turn")
-	# Play it as well as anyone could: straight to the vent and pry every tick.
+	_check(gs.state.pending.get("kind", "") == "mini" and gs.state.mini.game == "shower", "a jail month is the showers, not a skipped turn")
+	# The best anyone could play it: sharp eyes, fast thumbs. Still drops it, right at the end.
+	var held: Array = []
+	for seed in 60:
+		held.append(_shower(seed, 1, 2, "best"))
+	held.sort()
+	print("shower: the best player held on %.1f-%.1f s of %.0f" % [held[0], held[-1], Shower.SECONDS])
+	_check(float(held[0]) >= Shower.SECONDS - Shower.SURE_DROP - 0.2, "the best players hold on nearly to the end")
+	_check(float(held[-1]) < Shower.SECONDS, "but nobody gets to the end")
+	var lazy: Array = []
+	var mash: Array = []
+	for seed in 60:
+		lazy.append(_shower(seed, 1, 2, "none"))
+		mash.append(_shower(seed, 1, 2, "mash"))
+	lazy.sort()
+	mash.sort()
+	_check(float(lazy[30]) < 5.0, "hands off, it's gone in seconds (median %.1f s)" % lazy[30])
+	_check(float(mash[-1]) < 2.0, "mashing one side throws it out the other")
+	# This turn's shower, played to the end: the cut to Bubba, then the energy.
 	var m: Dictionary = gs.state.mini
 	m.ready = 0
-	m.me.x = Jailbreak.VENT.x - 1
-	m.me.y = Jailbreak.VENT.y
-	var best := 0
-	var saw_guard := false
+	var before := int(ana.crew[0].stamina)
+	var cut_from := -1
 	while not m.over:
-		if m.phase == "dig":
-			m.queue = ["E"]
 		Mini.step(m, gs.rng)
-		best = maxi(best, int(m.dig))
-		saw_guard = saw_guard or m.guards.size() > 0
-	print("jailbreak: vent got to %d%% before the guard" % int(100.0 * best / Jailbreak.DIG_MAX))
-	_check(best >= Jailbreak.DIG_MAX * 0.9, "you get very close")
-	_check(best < Jailbreak.DIG_MAX and not m.won, "but never out")
-	_check(saw_guard and m.grabbed, "the guard comes in and collars you")
+		if m.phase == "dropped" and cut_from < 0:
+			cut_from = int(m.tick)
+	_check(cut_from > 0 and int(m.tick) - cut_from >= int(Shower.CUT_SECONDS / Mini.TICK) - 1 and not m.won, "the soap drops, then Bubba's scene plays out")
 	gs._end_mini(ana)
+	_check(int(ana.crew[0].stamina) == before - Balance.SHOWER_STAMINA, "%d less energy after the shower" % Balance.SHOWER_STAMINA)
 	gs.handle(1, {"t": "pending", "id": "ok"})
 	_check(gs._active() != ana, "the jail turn ends after it")
 	_to_turn(1)
-	_check(gs.state.mini.get("game", "") == "jailbreak", "the second month too")
+	_check(gs.state.mini.get("game", "") == "shower", "the second month too")
+	before = int(ana.crew[0].stamina)
 	gs.handle(1, {"t": "pending", "id": "give_up"})
+	_check(not gs.state.mini.over and gs.state.mini.phase == "dropped", "letting go still plays the scene")
+	while not gs.state.mini.over:
+		gs.tick(Mini.TICK)
+	_check(int(ana.crew[0].stamina) == before - Balance.SHOWER_STAMINA, "and costs the energy too")
 	gs.handle(1, {"t": "pending", "id": "ok"})
 	while ana.crew.size() > 1:
 		ana.crew.pop_back()
 	_to_turn(1)
 	gs.state.pending = {}
-	_check(int(ana.crew[0].stamina) <= 30 - Balance.RELEASE_STAMINA + 8, "out: energy down by %d (now %d)" % [Balance.RELEASE_STAMINA, ana.crew[0].stamina])
 	_check(ana.chair and int(ana.steps_max) == Balance.WHEELCHAIR_STEPS, "in a wheelchair, on %d steps" % Balance.WHEELCHAIR_STEPS)
 	_check(not gs._driving(ana), "and nobody to drive the car")
 	var dir := ""
@@ -252,6 +267,32 @@ func _kid() -> void:
 
 # ------------------------------------------------------------------ helpers
 
+## One shower on its own: `lag` ticks to see the soap, a tap at most every `every` ticks. "best"
+## taps the side it's heading for, "none" never taps, "mash" taps right and only right.
+func _shower(seed: int, lag: int, every: int, how: String) -> float:
+	var r := RandomNumberGenerator.new()
+	r.seed = seed
+	var m := Mini.create("shower", "Shower time", 0, r, {})
+	m.ready = 0
+	var seen: Array = []
+	var last := -99
+	while m.phase == "hold":
+		seen.append([float(m.soap), float(m.vel)])
+		var s: Array = seen[maxi(0, seen.size() - 1 - lag)]
+		var ahead: float = s[0] + s[1] * 5.0
+		if int(m.tick) - last >= every:
+			var dir := ""
+			if how == "best":
+				dir = "E" if ahead > 0.2 else ("W" if ahead < -0.2 else "")
+			elif how == "mash":
+				dir = "E"
+			if dir != "":
+				Mini.input(m, {"dir": dir})
+				last = int(m.tick)
+		Mini.step(m, r)
+	return float(m.held)
+
+
 ## Ends turns (clearing prompts) until it's `pid`'s.
 func _to_turn(pid: int) -> void:
 	for i in 40:
@@ -263,7 +304,7 @@ func _to_turn(pid: int) -> void:
 		gs.state.fight = {}
 		gs.state.mini = {}
 		gs.handle(int(gs._active().owner), {"t": "end_turn"})
-		while gs.state.get("mini", {}).get("game", "") == "jailbreak" and int(gs._active().id) != pid:
+		while gs.state.get("mini", {}).get("game", "") == "shower" and int(gs._active().id) != pid:
 			gs.state.pending = {}
 			gs.state.mini = {}
 			gs._after_action(gs._active())

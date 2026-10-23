@@ -2,7 +2,8 @@ extends VBoxContainer
 ## The minigame HUD (Net.state.mini; see Mini): a bar along the top with the title, a hint, the
 ## clock, how it's going (boxes on the truck, containers on the track...) and the bail-out button.
 ## For the safe it adds the three dials, and plays the clicks: each turn of a dial makes a tone,
-## and on the right number the tone is a little lower. Everyone watching hears and sees the same.
+## and on the right number the tone is a little lower. For the showers, a grip meter with the soap
+## on it and big left/right buttons. Everyone watching hears and sees the same.
 
 const C_BG := Color("#121A2E")
 const TONE := 880.0
@@ -22,6 +23,10 @@ var _playback: AudioStreamGeneratorPlayback
 var _clicks := -1
 var _meter_h := 0.0
 var _mini_id := -1
+var _grip: PanelContainer       # shower: the soap's slide across your hands, and the buttons
+var _grip_track: Control
+var _grip_soap: ColorRect
+var _grip_btns: Array = []
 
 
 func _ready() -> void:
@@ -52,6 +57,7 @@ func _ready() -> void:
 	_bar.add_child(row)
 	add_child(_bar)
 	_build_safe()
+	_build_grip()
 	_player = AudioStreamPlayer.new()
 	var gen := AudioStreamGenerator.new()
 	gen.mix_rate = 22050.0
@@ -108,6 +114,50 @@ func _build_safe() -> void:
 	add_child(_safe)
 
 
+func _build_grip() -> void:
+	_grip = PanelContainer.new()
+	_grip.add_theme_stylebox_override("panel", UiTheme.box(Color("#1C1F26"), Color("#6E7787"), 14, 12, 2))
+	_grip.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	for dir in ["W", "E"]:
+		var b := UiTheme.button("◀" if dir == "W" else "▶", false, 64)
+		b.custom_minimum_size.x = 96
+		b.focus_mode = Control.FOCUS_NONE
+		b.button_down.connect(func(): Net.send_intent({"t": "mini", "dir": dir}))
+		_grip_btns.append(b)
+	row.add_child(_grip_btns[0])
+	# The track: your hands in the middle, red ends where it gets away.
+	_grip_track = Control.new()
+	_grip_track.custom_minimum_size = Vector2(300, 64)
+	var bg := ColorRect.new()
+	bg.color = Color("#0E1015")
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_grip_track.add_child(bg)
+	for side in [0.0, 1.0]:
+		var edge := ColorRect.new()
+		edge.color = Color("#7A2A26")
+		edge.size = Vector2(36, 64)
+		edge.position = Vector2(side * (300 - 36), 0)
+		_grip_track.add_child(edge)
+	var mid := ColorRect.new()
+	mid.color = Color("#3A4A52")
+	mid.size = Vector2(90, 64)
+	mid.position = Vector2(105, 0)
+	_grip_track.add_child(mid)
+	_grip_soap = ColorRect.new()
+	_grip_soap.color = Color("#F7B6C8")
+	_grip_soap.size = Vector2(34, 44)
+	_grip_soap.position = Vector2(133, 10)
+	_grip_track.add_child(_grip_soap)
+	row.add_child(_grip_track)
+	row.add_child(_grip_btns[1])
+	_grip.add_child(row)
+	_grip.visible = false
+	add_child(_grip)
+
+
 ## The minigame's state changed (or a frame passed): redraw.
 func refresh() -> void:
 	var m: Dictionary = Net.state.get("mini", {})
@@ -128,12 +178,19 @@ func refresh() -> void:
 		_clock.text = "%.1f" % Mini.seconds_left(m)
 	var urgent: bool = not m.over and Mini.seconds_left(m) <= 5.0 and int(m.ready) <= 0 and m.get("phase", "") != "train"
 	_clock.add_theme_color_override("font_color", UiTheme.CORAL if urgent else UiTheme.YELLOW)
-	_quit.visible = mine and not m.over and m.get("phase", "") != "train"
+	_quit.visible = mine and not m.over and not (m.get("phase", "") in ["train", "dropped"])
 	if pend.get("kind", "") == "mini" and pend.options.size() > 0:
 		_quit.text = pend.options[0].label
 	_safe.visible = m.game == "safe"
 	if m.game == "safe":
 		_refresh_safe(m, mine)
+	_grip.visible = m.game == "shower" and m.phase == "hold"
+	if _grip.visible:
+		var x := clampf(float(m.soap), -1.0, 1.0)
+		_grip_soap.position.x = lerpf(_grip_soap.position.x, 133.0 + 133.0 * x, 0.5)
+		_grip_soap.rotation = 0.4 * x
+		for b in _grip_btns:
+			b.disabled = not mine or int(m.ready) > 0
 	if int(m.id) != _mini_id:
 		_mini_id = int(m.id)
 		_clicks = int(m.get("clicks", 0))
@@ -162,9 +219,11 @@ func _hint_text(m: Dictionary, mine: bool) -> String:
 				return "The vault swings open!" if m.won else "ALARM!"
 			"train":
 				return "The train is stopped!" if m.won else "The train got through."
-			"jailbreak":
-				return "Back to the cell."
+			"shower":
+				return "Dropped the soap."
 		return "Out!" if m.won else "Time's up!"
+	if int(m.ready) > 0 and m.game == "shower":
+		return "Get ready… left/right, A/D or the buttons." if mine else "%s is about to start." % who
 	if int(m.ready) > 0:
 		return "Get ready… arrows, WASD or the pad." if mine else "%s is about to start." % who
 	match str(m.game):
@@ -184,10 +243,10 @@ func _hint_text(m: Dictionary, mine: bool) -> String:
 			return "Push containers up onto the track. Call the train when you're ready."
 		"safe":
 			return "Up/down turns the dial, left/right picks one. Listen for the click that sounds different."
-		"jailbreak":
-			if m.get("phase", "") == "caught":
-				return "Footsteps. The guard's round…"
-			return "Get out of the stall, past Big Lou, and keep pushing into the vent on the right wall to pry it loose."
+		"shower":
+			if m.get("phase", "") == "dropped":
+				return "Uh oh."
+			return "Keep hold of the soap! Tap the side it's slipping toward. Don't overdo it."
 	return ""
 
 
@@ -203,8 +262,8 @@ func _score_text(m: Dictionary) -> String:
 			return "On the track: %d · need %d" % [int(m.got), int(m.need)]
 		"sneak":
 			return "%d guards on patrol" % m.guards.size()
-		"jailbreak":
-			return "Vent: %d%% loose" % int(100.0 * float(m.dig) / maxf(1.0, float(m.dig_max)))
+		"shower":
+			return "Held on: %.1f s" % float(m.held)
 	return ""
 
 

@@ -248,8 +248,13 @@ func _process(delta: float) -> void:
 		var fit := maxf(Mini.H + 5.5, (Mini.W + 2.0) / maxf(0.5, vs.x / maxf(1.0, vs.y)))
 		var d := fit / 2.0 / tan(deg_to_rad(camera.fov / 2.0)) * 0.98
 		var look: Vector3 = mini_view.center() + Vector3(0, 0, -1.4)   # the grid sits low, clear of the minigame bar
-		# The jailbreak is watched from lower down, so the people (and Big Lou's moment) read.
-		var pitch: float = deg_to_rad(52.0) if Net.state.mini.get("game", "") == "jailbreak" else MINI_PITCH
+		# The showers are watched from lower down, so the people read; then it cuts to Bubba.
+		var pitch: float = deg_to_rad(50.0) if Net.state.mini.get("game", "") == "shower" else MINI_PITCH
+		var shot: Dictionary = mini_view.cam_shot()
+		if not shot.is_empty():
+			look = shot.look
+			d = shot.dist
+			pitch = shot.pitch
 		camera.position = look + Vector3(0, sin(pitch), cos(pitch)) * d
 		camera.look_at(look, Vector3.UP)
 		return

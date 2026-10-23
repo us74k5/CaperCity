@@ -85,10 +85,10 @@ Force a layout with `?mobile=1` or `?desktop=1` in the URL (or `-- --mobile` whe
   arrested on the spot, or with a crew behind you, a fight with the stakeout first (a paid-off police chief still covers
   you). The police start every turn fresh: last turn's crime scenes are open again.
   Jail impounds a car you bought (pay the fee at police HQ to get it back); a stolen one goes back to its owner for good.
-- **Jail:** each month inside is played: the prison bathroom jailbreak. Pry the vent off the far wall; you'll get it
-  almost open, but the guards' round always comes first (and Big Lou finds it hilarious). Out of jail you're down
-  10 energy and in a wheelchair for as many turns as you served: fewer steps, no motorway, and no driving unless a
-  crew member drives.
+- **Jail:** each month inside is played: shower time in the cell block. Keep hold of the soap by tapping left or
+  right toward the side it's slipping to; it gets slipperier, and even the best player drops it just before time is
+  up. Then Bubba notices, and each shower costs 10 energy. Out of jail you're in a wheelchair for as many turns as you
+  served: fewer steps, no motorway, and no driving unless a crew member drives.
 - **Easy Eddie:** an unpaid loan brings Eddie and his whole gang (rifles and machine guns) at your next turn. Beat them
   and the debt is gone; lose and they break your legs: a wheelchair and 25 less energy for the rest of the game.
 - The ransom chase: when the parents cheat, catch the runaway with the money case in 15 seconds.
@@ -118,8 +118,8 @@ godot --headless --path . --script res://tests/city_map_test.gd   # the original
 godot --headless --path . --script res://tests/creation_test.gd   # making your boss, and how often police stop you
 godot --headless --path . --script res://tests/jail_test.gd       # jail, crime scenes, loan collectors, police response by crime, chase steps
 godot --headless --path . --script res://tests/ui_lot_test.gd     # the car lot, and the camera in among the cars when stealing one
-godot --headless --path . --script res://tests/turn_rules_test.gd # police reset, impound, stakeouts, jail turns, wheelchair, Eddie, casino payouts
-godot --headless --path . --script res://tests/ui_jail_test.gd    # the jailbreak on screen, the wheelchair, Eddie's gang on the fight screen
+godot --headless --path . --script res://tests/turn_rules_test.gd # police reset, impound, stakeouts, jail showers, wheelchair, Eddie, casino payouts
+godot --headless --path . --script res://tests/ui_jail_test.gd    # the shower on screen, the wheelchair, Eddie's gang on the fight screen
 godot --headless --path . --script res://tests/ui_creator_test.gd   # the creator, dragging the map, the gun store and gym
 godot --headless --path . --script res://tests/ui_smoke_test.gd   # drives the real menus/HUD through a game
 godot --headless --path . --script res://tests/ui_fight_test.gd   # police stop -> shoot it out -> fight played by tapping

@@ -5,6 +5,7 @@ extends Node3D
 ##   loot:           a shop at night; boxes to push onto the marked squares by the back door
 ##   containers:     the container yard at the docks
 ##   train:          the rail yard; containers to push onto the track, then the mail train
+##   shower:         the prison showers; the soap in your hands, and Bubba
 ## Positions arrive at the server's tick rate and are eased between squares here.
 ## Grid square (x, y) is at local (x + 0.5, 0, y + 0.5).
 
@@ -24,11 +25,12 @@ const LOOK := {
 	"loot": [Color("#2B3142"), Color("#5E6676"), Color("#8E97A8"), 0.8, false],
 	"containers": [Color("#55595F"), Color("#3D5C70"), Color("#6E8DA0"), 0.9, false],
 	"train": [Color("#5A5650"), Color("#7A4A3A"), Color("#A5978A"), 0.6, false],
-	"jailbreak": [Color("#6F7F88"), Color("#4C5D66"), Color("#8796A0"), 1.0, false],
+	"shower": [Color("#7E9BA6"), Color("#C9D6DB"), Color("#E9F0F2"), 1.3, false],
 }
-const PRISON_GUARD := "character-male-a"
-const BIG_LOU := "character-male-d"
-const C_MOSAIC := [Color("#F2C9A8"), Color("#B9785A"), Color("#E6A88A"), Color("#8E5A44"), Color("#FFE0C8")]
+const BUBBA := "character-male-d"
+const INMATES := ["character-male-b", "character-male-e", "character-male-f"]
+const C_SOAP := Color("#F7B6C8")
+const CUT_AT := 18.0            # ticks after the drop when the scene cuts to Bubba
 
 var crew_looks: Array = []      # set by city_view
 var _id := -1
@@ -43,10 +45,10 @@ var _clock := 0.0               # the server tick we're showing, eased between u
 var _last_tick := -1
 var _t := 0.0
 var _run: Dictionary = {}       # my own runner in a chase, moved here at once (see Chase.place)
-var _lou: Dictionary = {}       # jailbreak: Big Lou {node, anim, shorts, censor, say}
-var _vent: Node3D               # jailbreak: the vent grate, swinging open as it's pried
-var _busted: Label3D
-var _props := {}                # cells drawn as fixtures, not wall blocks
+var _bubba: Dictionary = {}     # shower: {node, anim, say}
+var _soap: Node3D               # shower: the soap, in your hands and then on the tiles
+var _soap_x := 0.0
+var _oops: Label3D
 
 
 func showing() -> bool:
@@ -66,10 +68,6 @@ func show_mini(m: Dictionary, look: String, col: Color) -> void:
 	_game = m.game
 	_set = Node3D.new()
 	add_child(_set)
-	# The bathroom's toilets and sinks block the way like walls, but are drawn as themselves.
-	_props = {}
-	for c in m.get("toilets", []) + m.get("sinks", []):
-		_props[Vector2i(int(c[0]), int(c[1]))] = true
 	_build_floor(m.rows)
 	_me = _actor(look, 1.3)
 	_disc(_me.node, col, 0.45)
@@ -123,8 +121,8 @@ func show_mini(m: Dictionary, look: String, col: Color) -> void:
 				_items.append(_crate(i))
 			if _game == "train":
 				_build_track()
-		"jailbreak":
-			_build_bathroom(m)
+		"shower":
+			_build_showers(m)
 	_clock = float(m.tick)
 	_last_tick = int(m.tick)
 	if _game in ["escape", "catch"] and Net.is_my_turn():
@@ -145,9 +143,9 @@ func clear() -> void:
 	_train = null
 	_sight = null
 	_run = {}
-	_lou = {}
-	_vent = null
-	_busted = null
+	_bubba = {}
+	_soap = null
+	_oops = null
 
 
 func _process(delta: float) -> void:
@@ -221,6 +219,9 @@ func _report() -> void:
 
 
 func _place_all(m: Dictionary) -> void:
+	if _game == "shower":
+		_place_showers(m)
+		return
 	if _run.is_empty():
 		_place(_me, m.me, m)
 	else:
@@ -263,8 +264,6 @@ func _place_all(m: Dictionary) -> void:
 				node.position = to + Vector3(0.5 * f, 2.2 * sin(f * PI), -2.5 * f)
 				node.rotation = Vector3(f * 5.0, f * 3.0, 0)
 				node.visible = f < 1.0
-	if _game == "jailbreak":
-		_place_bathroom(m)
 	if _train and m.has("train"):
 		_train.position.x = lerpf(_train.position.x, float(m.train.x), 0.5)
 		_train.visible = m.get("phase", "") == "train"
@@ -287,8 +286,6 @@ func _place(a: Dictionary, s: Dictionary, m: Dictionary) -> void:
 	var anim := run if moving and not m.over and int(m.ready) <= 0 else "idle"
 	if m.over and a == _me:
 		anim = "emote-yes" if m.won else "emote-no"
-	elif m.get("grabbed", false) and a == _me:
-		anim = "emote-no"   # collared by the guard
 	if a.anim.current_animation != anim:
 		a.anim.play(anim, 0.1)
 
@@ -318,7 +315,7 @@ func _build_floor(rows: Array) -> void:
 	var thin: bool = look[4]
 	var wall_t := 0.36 if thin else 1.0
 	var is_wall := func(x: int, y: int) -> bool:
-		return x >= 0 and y >= 0 and x < Mini.W and y < Mini.H and (rows[y] as String)[x] == "#" and not _props.has(Vector2i(x, y))
+		return x >= 0 and y >= 0 and x < Mini.W and y < Mini.H and (rows[y] as String)[x] == "#"
 	var pieces: Array = []   # [center, size on x/z]
 	for y in Mini.H:
 		for x in Mini.W:
@@ -326,7 +323,7 @@ func _build_floor(rows: Array) -> void:
 			var c := Vector3(x + 0.5, 0, y + 0.5)
 			if mk == "o":
 				_tile(c, C_TARGET, 0.84)
-			elif (mk == "E" or mk == "D") and _game != "jailbreak":
+			elif mk == "E" or mk == "D":
 				_tile(c, C_EXIT, 0.96)
 				var arrow := Label3D.new()
 				arrow.text = "EXIT" if mk == "E" else "DOOR"
@@ -361,152 +358,137 @@ func _build_floor(rows: Array) -> void:
 		_set.add_child(mmi)
 
 
-## The prison bathroom (see Jailbreak): tiled floor, stalls with toilets, the sinks, the guards' door,
-## the vent in the far wall, Big Lou by the sinks and the guard who'll come in at the end.
-func _build_bathroom(m: Dictionary) -> void:
+## Where the camera should be instead of the usual view over the grid ({} for the usual):
+## once the soap is on the floor, it cuts to Bubba.
+func cam_shot() -> Dictionary:
+	var m: Dictionary = Net.state.get("mini", {})
+	if _game != "shower" or _bubba.is_empty() or int(m.get("drop_tick", -1)) < 0 or _clock - float(m.drop_tick) < CUT_AT:
+		return {}
+	var chest: Vector3 = (_bubba.node as Node3D).global_position + Vector3(0, 1.35, 0)
+	var since := _clock - float(m.drop_tick) - CUT_AT
+	return {"look": chest, "dist": lerpf(6.4, 5.2, clampf(since / 40.0, 0.0, 1.0)), "pitch": deg_to_rad(8.0)}
+
+
+## The prison showers (see Shower): an open bay, tiled, shower heads along both walls with the
+## water running, a few inmates minding their own business, and Bubba.
+func _build_showers(m: Dictionary) -> void:
 	for y in Mini.H:
 		for x in Mini.W:
 			if (x + y) % 2 == 0 and Mini.mark(m.rows, Vector2i(x, y)) == ".":
-				_tile(Vector3(x + 0.5, 0, y + 0.5), Color("#5E6D75"), 0.98)
-	for t in m.toilets:
-		var at := Vector3(int(t[0]) + 0.5, 0, int(t[1]) + 0.5)
-		_part(_set, Vector3(0.5, 0.42, 0.62), at + Vector3(0, 0.21, 0.05), Color("#EEF1F2"))
-		_part(_set, Vector3(0.46, 0.06, 0.5), at + Vector3(0, 0.44, 0.08), Color("#2B2F33"))   # the seat
-		_part(_set, Vector3(0.62, 0.55, 0.22), at + Vector3(0, 0.5, -0.3), Color("#DDE3E6"))
-	for k in m.sinks:
-		var at2 := Vector3(int(k[0]) + 0.5, 0, int(k[1]) + 0.5)
-		_part(_set, Vector3(0.8, 0.7, 0.6), at2 + Vector3(0, 0.35, 0), Color("#F4F6F7"))
-		_part(_set, Vector3(0.5, 0.06, 0.36), at2 + Vector3(0, 0.71, -0.02), Color("#9DB7C4"))
-		_part(_set, Vector3(0.7, 0.5, 0.05), at2 + Vector3(0, 1.3, 0.48), Color("#CFE6F2"))   # mirror
-	# The guards' door: steel, with a little window.
-	_part(_set, Vector3(0.2, 1.4, 0.95), Vector3(Jailbreak.DOOR.x + 0.9, 0.7, Jailbreak.DOOR.y + 0.5), Color("#4E5A63"))
-	_part(_set, Vector3(0.22, 0.3, 0.4), Vector3(Jailbreak.DOOR.x + 0.9, 1.1, Jailbreak.DOOR.y + 0.5), Color("#9DD0E8"))
-	# The vent: a dark hole in the wall and a grate that swings open on its hinge.
-	var v := Vector3(Jailbreak.VENT.x, 0, Jailbreak.VENT.y + 0.5)
-	_part(_set, Vector3(0.9, 0.7, 0.9), v + Vector3(0.45, 0.35, 0), Color("#14171A"))
-	_part(_set, Vector3(0.9, 0.3, 1.0), v + Vector3(0.45, 0.85, 0), LOOK.jailbreak[1])
-	_vent = Node3D.new()
-	_vent.position = v + Vector3(0, 0, -0.45)
-	_set.add_child(_vent)
-	var grate := _part(_vent, Vector3(0.06, 0.66, 0.9), Vector3(0, 0.35, 0.45), Color("#7D868C"))
-	for i in 4:
-		_part(grate, Vector3(0.08, 0.04, 0.84), Vector3(0, -0.24 + i * 0.16, 0), Color("#4B5257"))
-	var tag := Label3D.new()
-	tag.font_size = 54
-	tag.outline_size = 10
-	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	tag.position = Vector3(0, 1.4, 0.45)
-	tag.name = "tag"
-	_vent.add_child(tag)
-	# The guard, out of sight until the round comes.
-	var g := _actor(PRISON_GUARD, 1.3)
-	g.node.visible = false
-	_disc(g.node, Color("#2F5FBF"), 0.45)
-	_foes.append(g)
-	# Big Lou: a heavyweight in red trunks and boxing gloves.
-	var lou := _actor(BIG_LOU, 1.0)
-	lou.node.scale = Vector3(3.1, 2.4, 2.8)   # a heavyweight: broad, and a head taller than anyone
-	lou.node.position = Vector3(Jailbreak.LOU.x + 0.5, 0, Jailbreak.LOU.y + 0.5)
-	lou.anim.get_animation("emote-yes").loop_mode = Animation.LOOP_LINEAR
-	for side in ["right", "left"]:
-		var glove := MeshInstance3D.new()
-		var ball := SphereMesh.new()
-		ball.radius = 0.075
-		ball.height = 0.15
-		glove.mesh = ball
-		glove.material_override = _flat(Color("#C8231E"))
-		_on_hand(lou.node, lou.anim, side, glove)
-	var shorts := _part(lou.node, Vector3(0.34, 0.12, 0.26), Vector3(0, 0.26, 0), Color("#C8231E"))
-	_part(shorts, Vector3(0.35, 0.03, 0.27), Vector3(0, 0.055, 0), Color("#F2F2F2"))   # the waistband
-	# The censor block for when the shorts come down: a jittering mosaic over his backside.
-	var censor := Node3D.new()
-	censor.position = Vector3(0, 0.25, -0.17)
-	censor.visible = false
-	lou.node.add_child(censor)
-	for cy in 4:
-		for cx in 6:
-			_part(censor, Vector3(0.062, 0.042, 0.03), Vector3(-0.16 + cx * 0.064, -0.065 + cy * 0.044, 0), C_MOSAIC[(cx * 2 + cy * 3) % C_MOSAIC.size()])
+				_tile(Vector3(x + 0.5, 0, y + 0.5), Color("#93AEB8"), 0.98)
+	_tile(Vector3(Shower.SPOT.x + 0.5, 0, Shower.SPOT.y - 1.5), Color("#3B4A50"), 0.4)   # the drain
+	var water := _flat(Color(0.75, 0.9, 1.0, 0.35))
+	water.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	for h in m.heads:
+		var top := int(h[1]) < Mini.H / 2
+		var wall := Vector3(int(h[0]) + 0.5, 0, int(h[1]) + (1.0 if top else 0.0))
+		var out := 1.0 if top else -1.0
+		_part(_set, Vector3(0.08, 0.9, 0.08), wall + Vector3(0, 1.5, 0.05 * out), Color("#8A949A"))   # the pipe
+		_part(_set, Vector3(0.1, 0.08, 0.4), wall + Vector3(0, 1.95, 0.2 * out), Color("#8A949A"))
+		_part(_set, Vector3(0.26, 0.08, 0.26), wall + Vector3(0, 1.9, 0.4 * out), Color("#B8C2C8"))   # the head
+		_part(_set, Vector3(0.12, 0.1, 0.06), wall + Vector3(0.3, 1.1, 0.04 * out), Color("#B8C2C8"))   # the tap
+		var stream := MeshInstance3D.new()
+		var cyl := CylinderMesh.new()
+		cyl.top_radius = 0.1
+		cyl.bottom_radius = 0.24
+		cyl.height = 1.85
+		stream.mesh = cyl
+		stream.material_override = water
+		stream.position = wall + Vector3(0, 0.93, 0.4 * out)
+		_set.add_child(stream)
+	var looks: Array = INMATES
+	for i in m.inmates.size():
+		var c: Array = m.inmates[i]
+		var guy := _actor(looks[i % looks.size()], 1.3)
+		guy.node.position = Vector3(int(c[0]) + 0.5, 0, int(c[1]) + 0.5)
+		guy.node.rotation.y = PI if int(c[1]) < Mini.H / 2 else 0.0   # faces his shower
+		_towel(guy.node, 1.0)
+	# You, under the middle shower, facing us with the soap.
+	_me.node.position = Vector3(Shower.SPOT.x + 0.5, 0, Shower.SPOT.y + 0.5)
+	_towel(_me.node, 1.0)
+	_soap = Node3D.new()
+	_part(_soap, Vector3(0.34, 0.14, 0.22), Vector3.ZERO, C_SOAP)
+	_part(_soap, Vector3(0.28, 0.02, 0.16), Vector3(0, 0.08, 0), Color("#FFFFFF"))
+	_set.add_child(_soap)
+	_soap_x = 0.0
+	_oops = Label3D.new()
+	_oops.text = "OOPS!"
+	_oops.font_size = 90
+	_oops.outline_size = 16
+	_oops.modulate = Color("#FF5D4F")
+	_oops.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_oops.no_depth_test = true
+	_oops.visible = false
+	_set.add_child(_oops)
+	# Bubba: the biggest man on the block, a head taller than anyone, in a towel.
+	var b := _actor(BUBBA, 1.0)
+	b.node.scale = Vector3(2.9, 2.8, 2.7)
+	b.node.position = Vector3(int(m.bubba.x) + 0.5, 0, int(m.bubba.y) + 0.5)
+	b.node.rotation.y = PI
+	b.anim.get_animation("emote-yes").loop_mode = Animation.LOOP_LINEAR
+	_towel(b.node, 1.0)
 	var say := Label3D.new()
-	say.font_size = 72
+	say.font_size = 52
 	say.outline_size = 14
 	say.modulate = UiTheme.YELLOW
 	say.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	say.no_depth_test = true
-	say.position = Vector3(Jailbreak.LOU.x + 0.5, 2.3, Jailbreak.LOU.y + 0.5)
 	say.visible = false
 	_set.add_child(say)
-	_lou = {"node": lou.node, "anim": lou.anim, "shorts": shorts, "censor": censor, "say": say}
-	_busted = Label3D.new()
-	_busted.text = "BUSTED!"
-	_busted.font_size = 90
-	_busted.outline_size = 16
-	_busted.modulate = Color("#FF5D4F")
-	_busted.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	_busted.no_depth_test = true
-	_busted.visible = false
-	_set.add_child(_busted)
+	_bubba = {"node": b.node, "anim": b.anim, "say": say}
 
 
-## Attaches `thing` to a character's hand, so it follows every animation (as fight_view arms them).
-func _on_hand(node: Node3D, ap: AnimationPlayer, side: String, thing: Node3D) -> void:
-	var sk: Skeleton3D = node.find_children("*", "Skeleton3D", true, false)[0]
-	var bi := sk.find_bone("arm-" + side)
-	ap.play("holding-" + side)
-	ap.advance(0.0)
-	var pose := sk.get_bone_global_pose(bi)
-	var ba := BoneAttachment3D.new()
-	ba.bone_name = "arm-" + side
-	sk.add_child(ba)
-	ba.add_child(thing)
-	var fist := Vector3(-0.1 if side == "right" else 0.1, 0.27, 0.21)
-	thing.transform = pose.affine_inverse() * Transform3D(Basis(), fist)
-	ap.play("idle")
+## A white towel round the waist.
+func _towel(node: Node3D, k: float) -> void:
+	_part(node, Vector3(0.36, 0.16, 0.28) * k, Vector3(0, 0.25, 0), Color("#F4F4EF"))
 
 
-## The vent, the guard's round and Big Lou's moment, all from the server's ticks so everyone
-## watching sees the same.
-func _place_bathroom(m: Dictionary) -> void:
-	var frac := float(m.dig) / maxf(1.0, float(m.dig_max))
-	if _vent:
-		_vent.rotation.y = lerpf(_vent.rotation.y, -frac * 1.2, 0.2)
-		var tag: Label3D = _vent.get_node("tag")
-		tag.text = "VENT %d%%" % int(frac * 100.0)
-		tag.modulate = UiTheme.YELLOW if frac < 0.9 else Color("#FF9C90")
-	if _foes.size() > 0:
-		_foes[0].node.visible = m.guards.size() > 0
-	if _lou.is_empty():
-		return
-	var since: float = -1.0 if int(m.caught_tick) < 0 else _clock - float(m.caught_tick)
-	var lou: Node3D = _lou.node
-	var say: Label3D = _lou.say
+## The soap sliding about in your hands, then the drop and Bubba's close-up, all from the server's
+## ticks so everyone watching sees the same.
+func _place_showers(m: Dictionary) -> void:
+	var me: Node3D = _me.node
+	var since: float = -1.0 if int(m.drop_tick) < 0 else _clock - float(m.drop_tick)
+	var hands := me.position + Vector3(0, 0.62 * me.scale.y, 0.32)
 	if since < 0.0:
-		lou.rotation.y = 0.0   # at the sinks, minding his own business
-		if _lou.anim.current_animation != "idle":
-			_lou.anim.play("idle", 0.2)
-		return
-	if since < 35.0:
-		# The guard's here and Lou thinks it's the funniest thing he's seen all year.
-		var to: Vector3 = _me.node.position - lou.position
-		lou.rotation.y = lerp_angle(lou.rotation.y, atan2(to.x, to.z), 0.2)
-		say.visible = true
-		say.text = "HA! HA! HA!"
-		say.position.y = 2.3 + 0.12 * sin(since * 0.9)
-		if _lou.anim.current_animation != "emote-yes":
-			_lou.anim.play("emote-yes", 0.1)
+		_soap_x = lerpf(_soap_x, clampf(float(m.soap), -1.0, 1.0), 0.35)
+		_soap.position = hands + Vector3(0.42 * _soap_x, 0.04 * absf(sin(_t * 9.0)), 0)
+		_soap.rotation.z = -0.6 * _soap_x
+		_soap.rotation.y = 0.3 * sin(_t * 7.0)
+		if _me.anim.current_animation != "holding-both":
+			_me.anim.play("holding-both", 0.15)
 	else:
-		# He turns his back to us, the trunks come down, and the censor does its job.
-		lou.rotation.y = lerp_angle(lou.rotation.y, PI, 0.25)
-		var drop := clampf((since - 38.0) / 6.0, 0.0, 1.0)
-		_lou.shorts.position.y = lerpf(0.26, 0.05, drop)
-		_lou.censor.visible = drop > 0.3
-		for c in _lou.censor.get_children():
-			(c as Node3D).position.z = 0.01 * sin(_t * 30.0 + c.get_index())
-		say.text = "WELCOME TO THE BLOCK!"
-		if _lou.anim.current_animation != "idle":
-			_lou.anim.play("idle", 0.2)
-	if m.get("grabbed", false) and _busted:
-		_busted.visible = true
-		_busted.position = _me.node.position + Vector3(0, 2.0, 0)
+		# Out of your hands, onto the tiles, skidding away.
+		var side := float(m.fell) if int(m.fell) != 0 else 1.0
+		var f := clampf(since / 12.0, 0.0, 1.0)
+		var start := hands + Vector3(0.42 * side, 0, 0)
+		var land := me.position + Vector3(1.1 * side, 0.05, 0.5)
+		_soap.position = start.lerp(land, f) + Vector3(0, 0.9 * sin(f * PI), 0)
+		if since > 12.0:
+			_soap.position = land + Vector3(minf((since - 12.0) * 0.03, 0.9) * side, 0, 0)
+		_soap.rotation.x += 0.4 if f < 1.0 else 0.0
+		_oops.visible = since < CUT_AT + 4.0
+		_oops.position = me.position + Vector3(0, 2.2, 0)
+		if _me.anim.current_animation != "emote-no":
+			_me.anim.play("emote-no", 0.1)
+	if _bubba.is_empty():
+		return
+	var bub: Node3D = _bubba.node
+	var say: Label3D = _bubba.say
+	if since < 0.0:
+		bub.rotation.y = PI   # facing his shower
+		if _bubba.anim.current_animation != "idle":
+			_bubba.anim.play("idle", 0.2)
+		say.visible = false
+		return
+	# He heard it hit the floor. He turns round, and he's smiling.
+	bub.rotation.y = lerp_angle(bub.rotation.y, 0.0, 0.12)
+	if since >= CUT_AT + 6.0:
+		say.visible = true
+		var n := clampi(int((since - CUT_AT - 6.0) / 2.0), 0, 20)
+		say.text = "Gotcha, hee hee hee".left(n)
+		say.position = bub.position + Vector3(0, 0.75 + 0.03 * sin(_t * 8.0), 0.9)   # under his grin
+		if _bubba.anim.current_animation != "emote-yes":
+			_bubba.anim.play("emote-yes", 0.1)
 
 
 ## Rails along row 1, running well off both sides of the yard, and the train (hidden until it comes).

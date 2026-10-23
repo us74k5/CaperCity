@@ -1,6 +1,6 @@
 extends SceneTree
-## On screen: a month in jail played as the bathroom jailbreak (prying the vent through the HUD's
-## keys, the guard's round and Big Lou's moment), the wheelchair on the map after release, and
+## On screen: a month in jail played as the showers (keeping hold of the soap through the HUD's
+## keys, the drop and the cut to Bubba), the wheelchair on the map after release, and
 ## Easy Eddie's gang breaking the boss's legs on the fight screen before the result card.
 ## Run: godot --path . --script res://tests/ui_jail_test.gd [-- --shots=DIR]  (headless works too)
 
@@ -53,35 +53,38 @@ func _run() -> bool:
 	match step:
 		"jail":
 			if frame - at == 5:
-				_check(m.get("game", "") == "jailbreak" and main.get("_city_view").in_mini(), "the jail month is a minigame on screen")
+				_check(m.get("game", "") == "shower" and main.get("_city_view").in_mini(), "the jail month is a minigame on screen")
 			if m.is_empty():
 				return false
 			if int(m.ready) > 0:
 				return false
-			if not shots.has("cell"):
-				shots.cell = true
-				_shot("jail_start")
-				# Skip the walk: put Rosa at the vent, then pry with the keys like a player would.
-				net.server.state.mini.me.x = Jailbreak.VENT.x - 1
-				net.server.state.mini.me.y = Jailbreak.VENT.y
-			if m.phase == "dig":
-				hud._move("E")
-				if float(m.dig) / Jailbreak.DIG_MAX > 0.6 and not shots.has("pry"):
-					shots.pry = true
-					_shot("jail_prying")
+			var mv: Node = main.get("_city_view").mini_view
+			if not shots.has("start"):
+				shots.start = true
+				_shot("shower_start")
+			if m.phase == "hold":
+				# Catch it like a player would, through the HUD's keys: tap the side it's heading for.
+				var ahead := float(m.soap) + float(m.vel) * 5.0
+				if frame % 2 == 0 and absf(ahead) > 0.2:
+					hud._move("E" if ahead > 0 else "W")
+				if float(m.held) > 6.0 and not shots.has("hold"):
+					shots.hold = true
+					_shot("shower_holding")
 			else:
-				var since := int(m.tick) - int(m.caught_tick)
-				if since > 20 and not shots.has("laugh"):
-					shots.laugh = true
-					_shot("jail_guard_laugh")
-				if since > 80 and not shots.has("moon"):
-					shots.moon = true
-					_check(main.get("_city_view").mini_view._lou.censor.visible, "the censor block is up")
-					_shot("jail_moon")
+				var since := int(m.tick) - int(m.drop_tick)
+				if since > 10 and not shots.has("drop"):
+					shots.drop = true
+					_check(mv.cam_shot().is_empty(), "the drop is seen from above first")
+					_shot("shower_drop")
+				if since > 75 and not shots.has("bubba"):
+					shots.bubba = true
+					_check(not mv.cam_shot().is_empty(), "then it cuts to Bubba")
+					_check(mv._bubba.say.visible and str(mv._bubba.say.text) == "Gotcha, hee hee hee", "Gotcha, hee hee hee")
+					_shot("shower_bubba")
 			if s.pending.get("kind", "") == "result":
-				_check(not m.won and int(m.dig) < Jailbreak.DIG_MAX, "never escapes (vent %d/%d)" % [m.dig, Jailbreak.DIG_MAX])
-				print("jail: ", s.pending.text)
-				_shot("jail_result")
+				_check(not m.won, "nobody wins the shower")
+				print("shower: held %.1f s; %s" % [float(m.held), s.pending.text])
+				_shot("shower_result")
 				net.send_intent({"t": "pending", "id": "ok"})
 				step = "release"
 				at = frame
